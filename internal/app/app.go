@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,9 @@ type pending struct {
 	WorkspaceID int64
 	SessionID   string
 	Prompt      string
+	ModelScope  string
+	ModelID     string
+	Provider    string
 }
 
 const (
@@ -131,7 +135,7 @@ func (a *App) handlePrivateMessage(ctx context.Context, msg *tgMessage) {
 			a.mu.Unlock()
 			a.send(msg.Chat.ID, "Workspace pin cleared.", nil)
 		case "model":
-			a.send(msg.Chat.ID, "/model is reserved. For now, set provider/modelId in config or the database.", nil)
+			a.sendModelScopes(ctx, msg.Chat.ID, msg.From.ID, strings.TrimSpace(msg.CommandArguments()))
 		default:
 			a.send(msg.Chat.ID, "Unknown command. Available: /workspace /new /sync /unpin /model", nil)
 		}
@@ -173,6 +177,42 @@ func (a *App) handleCallback(ctx context.Context, q *tgCallbackQuery) {
 	data := q.Data
 	chatID := q.Message.Chat.ID
 	switch {
+	case data == "model:scopes":
+		a.clearPending(q.From.ID)
+		a.editMessageText(chatID, q.Message.MessageID, modelScopeText(false), modelScopeKeyboard())
+	case data == "model:cancel":
+		a.clearPending(q.From.ID)
+		a.editMessageText(chatID, q.Message.MessageID, "Model selection cancelled.", nil)
+	case data == "model:refresh":
+		a.refreshModels(ctx, chatID, q.Message.MessageID)
+	case strings.HasPrefix(data, "mscope:"):
+		a.chooseModelScope(ctx, chatID, q.Message.MessageID, q.From.ID, strings.TrimPrefix(data, "mscope:"))
+	case strings.HasPrefix(data, "mprov:"):
+		a.chooseModelProvider(ctx, chatID, q.Message.MessageID, q.From.ID, strings.TrimPrefix(data, "mprov:"))
+	case strings.HasPrefix(data, "mmodel:"):
+		index, _ := strconv.Atoi(strings.TrimPrefix(data, "mmodel:"))
+		a.chooseModel(ctx, chatID, q.Message.MessageID, q.From.ID, index)
+	case strings.HasPrefix(data, "mwp:"):
+		page, _ := strconv.Atoi(strings.TrimPrefix(data, "mwp:"))
+		a.editWorkspaces(ctx, chatID, q.Message.MessageID, "Choose workspace:", "mws:", page)
+	case strings.HasPrefix(data, "mswp:"):
+		page, _ := strconv.Atoi(strings.TrimPrefix(data, "mswp:"))
+		a.editWorkspaces(ctx, chatID, q.Message.MessageID, "Choose workspace:", "msws:", page)
+	case strings.HasPrefix(data, "mws:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "mws:"), 10, 64)
+		a.applyWorkspaceModel(ctx, chatID, q.Message.MessageID, q.From.ID, id)
+	case strings.HasPrefix(data, "msws:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "msws:"), 10, 64)
+		a.chooseSessionWorkspace(ctx, chatID, q.Message.MessageID, q.From.ID, id, 0)
+	case strings.HasPrefix(data, "msp:"):
+		parts := strings.Split(strings.TrimPrefix(data, "msp:"), ":")
+		if len(parts) == 2 {
+			id, _ := strconv.ParseInt(parts[0], 10, 64)
+			page, _ := strconv.Atoi(parts[1])
+			a.chooseSessionWorkspace(ctx, chatID, q.Message.MessageID, q.From.ID, id, page)
+		}
+	case strings.HasPrefix(data, "msess:"):
+		a.applySessionModel(ctx, chatID, q.Message.MessageID, q.From.ID, strings.TrimPrefix(data, "msess:"))
 	case strings.HasPrefix(data, "wp:"):
 		page, _ := strconv.Atoi(strings.TrimPrefix(data, "wp:"))
 		a.editWorkspaces(ctx, chatID, q.Message.MessageID, "Choose a workspace:", "w:", page)
@@ -273,6 +313,211 @@ func (a *App) syncSessions(ctx context.Context, chatID int64) {
 	a.send(chatID, fmt.Sprintf("Sync complete: found %d new workspaces and %d sessions.", newWS, newSess), nil)
 }
 
+func (a *App) sendModelScopes(ctx context.Context, chatID, userID int64, args string) {
+	refresh := args == "--refresh"
+	if args != "" && !refresh {
+		a.send(chatID, "Usage: /model or /model --refresh", nil)
+		return
+	}
+	a.clearPending(userID)
+	if refresh {
+		if _, err := a.runner.AvailableModels(ctx, true); err != nil {
+			a.send(chatID, "Failed to refresh models from pi: "+err.Error(), nil)
+			return
+		}
+	}
+	a.send(chatID, modelScopeText(refresh), modelScopeKeyboard())
+}
+
+func (a *App) refreshModels(ctx context.Context, chatID int64, messageID int) {
+	if _, err := a.runner.AvailableModels(ctx, true); err != nil {
+		a.editMessageText(chatID, messageID, "Failed to refresh models from pi: "+err.Error(), nil)
+		return
+	}
+	a.editMessageText(chatID, messageID, modelScopeText(true), modelScopeKeyboard())
+}
+
+func (a *App) chooseModelScope(ctx context.Context, chatID int64, messageID int, userID int64, scope string) {
+	if scope != "global" && scope != "workspace" && scope != "session" {
+		a.editMessageText(chatID, messageID, "Unknown model scope.", nil)
+		return
+	}
+	a.setPending(userID, pending{Kind: "model", ModelScope: scope})
+	a.editModelProviders(ctx, chatID, messageID, scope)
+}
+
+func (a *App) editModelProviders(ctx context.Context, chatID int64, messageID int, scope string) {
+	models, err := a.runner.AvailableModels(ctx, false)
+	if err != nil {
+		a.editMessageText(chatID, messageID, "Failed to read models from pi: "+err.Error(), nil)
+		return
+	}
+	providers := modelProviders(models)
+	if len(providers) == 0 {
+		a.editMessageText(chatID, messageID, "pi returned no available model providers.", nil)
+		return
+	}
+	var rows [][]inlineKeyboardButton
+	for i := 0; i < len(providers); i += 2 {
+		var row []inlineKeyboardButton
+		for _, provider := range providers[i:min(i+2, len(providers))] {
+			row = append(row, inlineKeyboardButton{Text: provider, CallbackData: "mprov:" + provider})
+		}
+		rows = append(rows, row)
+	}
+	rows = append(rows, inlineKeyboardRow(
+		inlineKeyboardButton{Text: "< Scope", CallbackData: "model:scopes"},
+		inlineKeyboardButton{Text: "Cancel", CallbackData: "model:cancel"},
+	))
+	a.editMessageText(chatID, messageID, "Choose provider for "+scopeLabel(scope)+":", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (a *App) chooseModelProvider(ctx context.Context, chatID int64, messageID int, userID int64, provider string) {
+	p, ok := a.getPending(userID)
+	if !ok || p.Kind != "model" || p.ModelScope == "" {
+		a.editMessageText(chatID, messageID, "Model selection expired. Send /model again.", nil)
+		return
+	}
+	p.Provider = provider
+	a.setPending(userID, p)
+	a.editProviderModels(ctx, chatID, messageID, p.ModelScope, provider)
+}
+
+func (a *App) editProviderModels(ctx context.Context, chatID int64, messageID int, scope, provider string) {
+	models, err := a.runner.AvailableModels(ctx, false)
+	if err != nil {
+		a.editMessageText(chatID, messageID, "Failed to read models from pi: "+err.Error(), nil)
+		return
+	}
+	models = filterProviderModels(models, provider)
+	if len(models) == 0 {
+		a.editMessageText(chatID, messageID, "No models found for "+provider+".", nil)
+		return
+	}
+	var rows [][]inlineKeyboardButton
+	widths := modelButtonWidths(models)
+	for i, model := range models {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{
+			Text:         modelButtonText(model, widths),
+			CallbackData: "mmodel:" + strconv.Itoa(i),
+		}))
+	}
+	rows = append(rows, inlineKeyboardRow(
+		inlineKeyboardButton{Text: "< Provider", CallbackData: "mscope:" + scope},
+		inlineKeyboardButton{Text: "Cancel", CallbackData: "model:cancel"},
+	))
+	a.editMessageText(chatID, messageID, "Choose model from "+provider+":", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (a *App) chooseModel(ctx context.Context, chatID int64, messageID int, userID int64, index int) {
+	p, ok := a.getPending(userID)
+	if !ok || p.Kind != "model" || p.ModelScope == "" || p.Provider == "" {
+		a.editMessageText(chatID, messageID, "Model selection expired. Send /model again.", nil)
+		return
+	}
+	models, err := a.runner.AvailableModels(ctx, false)
+	if err != nil {
+		a.editMessageText(chatID, messageID, "Failed to read models from pi: "+err.Error(), nil)
+		return
+	}
+	models = filterProviderModels(models, p.Provider)
+	if index < 0 || index >= len(models) {
+		a.editMessageText(chatID, messageID, "Model selection expired. Send /model again.", nil)
+		return
+	}
+	model := models[index]
+	p.ModelID = model.Provider + "/" + model.ID
+	a.setPending(userID, p)
+	switch p.ModelScope {
+	case "global":
+		a.applyGlobalModel(chatID, messageID, userID, p.ModelID)
+	case "workspace":
+		a.editWorkspaces(ctx, chatID, messageID, "Choose workspace for "+modelDisplay(model)+":", "mws:", 0)
+	case "session":
+		a.editWorkspaces(ctx, chatID, messageID, "Choose workspace:", "msws:", 0)
+	}
+}
+
+func (a *App) applyGlobalModel(chatID int64, messageID int, userID int64, model string) {
+	if err := config.SetGlobalModel(a.paths.ConfigPath, model); err != nil {
+		a.editMessageText(chatID, messageID, "Failed to update config: "+err.Error(), nil)
+		return
+	}
+	a.cfg.GlobalModel = model
+	a.clearPending(userID)
+	a.editMessageText(chatID, messageID, "Global model set to "+model+".", nil)
+}
+
+func (a *App) applyWorkspaceModel(ctx context.Context, chatID int64, messageID int, userID int64, workspaceID int64) {
+	p, ok := a.getPending(userID)
+	if !ok || p.Kind != "model" || p.ModelScope != "workspace" || p.ModelID == "" {
+		a.editMessageText(chatID, messageID, "Model selection expired. Send /model again.", nil)
+		return
+	}
+	ws, err := a.store.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		a.editMessageText(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	if err := a.store.SetWorkspaceModel(ctx, workspaceID, p.ModelID); err != nil {
+		a.editMessageText(chatID, messageID, "Failed to update workspace model: "+err.Error(), nil)
+		return
+	}
+	a.clearPending(userID)
+	a.editMessageText(chatID, messageID, fmt.Sprintf("Workspace model set to %s for %s.", p.ModelID, workspaceLabel(ws)), nil)
+}
+
+func (a *App) chooseSessionWorkspace(ctx context.Context, chatID int64, messageID int, userID int64, workspaceID int64, page int) {
+	p, ok := a.getPending(userID)
+	if !ok || p.Kind != "model" || p.ModelScope != "session" || p.ModelID == "" {
+		a.editMessageText(chatID, messageID, "Model selection expired. Send /model again.", nil)
+		return
+	}
+	p.WorkspaceID = workspaceID
+	a.setPending(userID, p)
+	a.editModelSessions(ctx, chatID, messageID, workspaceID, page)
+}
+
+func (a *App) editModelSessions(ctx context.Context, chatID int64, messageID int, workspaceID int64, page int) {
+	total, err := a.store.CountSessions(ctx, workspaceID)
+	if err != nil {
+		a.editMessageText(chatID, messageID, "Failed to read sessions: "+err.Error(), nil)
+		return
+	}
+	page = clampPage(page, total, sessionPageSize)
+	sessions, err := a.store.ListSessions(ctx, workspaceID, sessionPageSize, page*sessionPageSize)
+	if err != nil {
+		a.editMessageText(chatID, messageID, "Failed to read sessions: "+err.Error(), nil)
+		return
+	}
+	var rows [][]inlineKeyboardButton
+	for _, sess := range sessions {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: displaySession(sess), CallbackData: "msess:" + sess.ID}))
+	}
+	rows = appendPageNav(rows, page, total, sessionPageSize, "msp:"+strconv.FormatInt(workspaceID, 10)+":")
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "Cancel", CallbackData: "model:cancel"}))
+	a.editMessageText(chatID, messageID, "Choose session:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (a *App) applySessionModel(ctx context.Context, chatID int64, messageID int, userID int64, sessionID string) {
+	p, ok := a.getPending(userID)
+	if !ok || p.Kind != "model" || p.ModelScope != "session" || p.ModelID == "" {
+		a.editMessageText(chatID, messageID, "Model selection expired. Send /model again.", nil)
+		return
+	}
+	sess, err := a.store.GetSession(ctx, sessionID)
+	if err != nil {
+		a.editMessageText(chatID, messageID, "Failed to read session: "+err.Error(), nil)
+		return
+	}
+	if err := a.store.SetSessionModel(ctx, sessionID, p.ModelID); err != nil {
+		a.editMessageText(chatID, messageID, "Failed to update session model: "+err.Error(), nil)
+		return
+	}
+	a.clearPending(userID)
+	a.editMessageText(chatID, messageID, fmt.Sprintf("Session model set to %s for %s.", p.ModelID, displaySession(sess)), nil)
+}
+
 func (a *App) sendWorkspaces(ctx context.Context, chatID int64, text, prefix string, page int) {
 	a.postWorkspaces(ctx, chatID, 0, text, prefix, page)
 }
@@ -349,6 +594,268 @@ func workspaceLabel(ws store.Workspace) string {
 	return label
 }
 
+func modelScopeText(refreshed bool) string {
+	if refreshed {
+		return "Choose model scope (models refreshed from pi):"
+	}
+	return "Choose model scope:"
+}
+
+func modelScopeKeyboard() inlineKeyboardMarkup {
+	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
+		{
+			{Text: "Global", CallbackData: "mscope:global"},
+			{Text: "Workspace", CallbackData: "mscope:workspace"},
+			{Text: "Session", CallbackData: "mscope:session"},
+		},
+		{
+			{Text: "Refresh", CallbackData: "model:refresh"},
+			{Text: "Cancel", CallbackData: "model:cancel"},
+		},
+	}}
+}
+
+func scopeLabel(scope string) string {
+	switch scope {
+	case "global":
+		return "Global"
+	case "workspace":
+		return "Workspace"
+	case "session":
+		return "Session"
+	default:
+		return scope
+	}
+}
+
+func modelProviders(models []runner.ModelInfo) []string {
+	seen := map[string]bool{}
+	var providers []string
+	for _, model := range models {
+		if model.Provider == "" || seen[model.Provider] {
+			continue
+		}
+		seen[model.Provider] = true
+		providers = append(providers, model.Provider)
+	}
+	return providers
+}
+
+func filterProviderModels(models []runner.ModelInfo, provider string) []runner.ModelInfo {
+	var out []runner.ModelInfo
+	for _, model := range models {
+		if model.Provider == provider {
+			out = append(out, model)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return modelDisplay(out[i]) < modelDisplay(out[j])
+	})
+	return out
+}
+
+type modelButtonColumnWidths struct {
+	Name float64
+	Ctx  float64
+	Out  float64
+	Icons int
+}
+
+func visualWidth(s string) float64 {
+	var w float64
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			if r == 'W' || r == 'M' {
+				w += 1.4
+			} else if r == 'I' {
+				w += 0.5
+			} else {
+				w += 1.1
+			}
+		case r >= 'a' && r <= 'z':
+			if r == 'm' || r == 'w' {
+				w += 1.3
+			} else if r == 'i' || r == 'l' || r == 'j' || r == 't' || r == 'f' {
+				w += 0.5
+			} else {
+				w += 0.95
+			}
+		case r >= '0' && r <= '9':
+			w += 1.1
+		case r == ' ' || r == '-' || r == '.':
+			w += 0.55
+		case r == '\u2002' || r == '\u2007':
+			w += 1.1
+		case r == '\u3000':
+			w += 2.0
+		case r > 127:
+			w += 2.1
+		default:
+			w += 1.0
+		}
+	}
+	return w
+}
+
+func truncateVisual(s string, maxWidth float64) string {
+	if visualWidth(s) <= maxWidth {
+		return s
+	}
+	target := maxWidth - 1.0 // reserve space for "…"
+	var res string
+	var w float64
+	for _, r := range s {
+		rw := visualWidth(string(r))
+		if w+rw > target {
+			break
+		}
+		res += string(r)
+		w += rw
+	}
+	return res + "…"
+}
+
+func padRightVisual(s string, targetWidth float64) string {
+	w := visualWidth(s)
+	if w >= targetWidth {
+		return s
+	}
+	diff := targetWidth - w
+	enSpaces := int(diff / 1.1)
+	rem := diff - float64(enSpaces)*1.1
+	regSpaces := int(rem / 0.55)
+	
+	res := s
+	if enSpaces > 0 {
+		res += strings.Repeat("\u2002", enSpaces)
+	}
+	if regSpaces > 0 {
+		res += strings.Repeat(" ", regSpaces)
+	}
+	return res
+}
+
+func padLeftVisual(s string, targetWidth float64) string {
+	w := visualWidth(s)
+	if w >= targetWidth {
+		return s
+	}
+	diff := targetWidth - w
+	enSpaces := int(diff / 1.1)
+	rem := diff - float64(enSpaces)*1.1
+	regSpaces := int(rem / 0.55)
+	
+	pad := ""
+	if enSpaces > 0 {
+		pad += strings.Repeat("\u2002", enSpaces)
+	}
+	if regSpaces > 0 {
+		pad += strings.Repeat(" ", regSpaces)
+	}
+	return pad + s
+}
+
+const maxNameWidthLimit = 12.5
+
+func modelButtonWidths(models []runner.ModelInfo) modelButtonColumnWidths {
+	var widths modelButtonColumnWidths
+	for _, model := range models {
+		if w := visualWidth(modelDisplay(model)); w > widths.Name {
+			widths.Name = w
+		}
+		if widths.Name > maxNameWidthLimit {
+			widths.Name = maxNameWidthLimit
+		}
+		if model.ContextWindow > 0 {
+			if w := visualWidth(compactNumber(model.ContextWindow)); w > widths.Ctx {
+				widths.Ctx = w
+			}
+		}
+		if model.MaxTokens > 0 {
+			if w := visualWidth(compactNumber(model.MaxTokens)); w > widths.Out {
+				widths.Out = w
+			}
+		}
+		icons := 0
+		if model.Reasoning {
+			icons++
+		}
+		for _, input := range model.Inputs {
+			if input == "text" || input == "image" {
+				icons++
+			}
+		}
+		if icons > widths.Icons {
+			widths.Icons = icons
+		}
+	}
+	return widths
+}
+
+func modelButtonText(model runner.ModelInfo, widths modelButtonColumnWidths) string {
+	displayName := truncateVisual(modelDisplay(model), widths.Name)
+	name := padRightVisual(displayName, widths.Name)
+	ctx := padLeftVisual("-", widths.Ctx)
+	if model.ContextWindow > 0 {
+		ctx = padLeftVisual(compactNumber(model.ContextWindow), widths.Ctx)
+	}
+	out := padLeftVisual("-", widths.Out)
+	if model.MaxTokens > 0 {
+		out = padLeftVisual(compactNumber(model.MaxTokens), widths.Out)
+	}
+	
+	var icons []string
+	if model.Reasoning {
+		icons = append(icons, "💭")
+	}
+	for _, input := range model.Inputs {
+		switch input {
+		case "text":
+			icons = append(icons, "📝")
+		case "image":
+			icons = append(icons, "🖼")
+		}
+	}
+	
+	iconStr := ""
+	// 模型能力 右对齐: 补全左侧缺失的图标宽度
+	padCount := widths.Icons - len(icons)
+	for i := 0; i < padCount; i++ {
+		iconStr += "\u3000" // U+3000 (Ideographic Space) perfectly matches Emoji width
+	}
+	for _, icon := range icons {
+		iconStr += icon
+	}
+	if iconStr == "" {
+		return name + " \u2002📚" + ctx + " ↗ " + out
+	}
+	return name + " \u2002📚" + ctx + " ↗ " + out + "\u2002" + iconStr
+}
+
+
+func modelDisplay(model runner.ModelInfo) string {
+	if model.Name != "" {
+		return model.Name
+	}
+	return model.ID
+}
+
+func compactNumber(v int64) string {
+	if v >= 1_000_000 {
+		if v%1_000_000 == 0 {
+			return strconv.FormatInt(v/1_000_000, 10) + "M"
+		}
+		return strconv.FormatFloat(float64(v)/1_000_000, 'f', 1, 64) + "M"
+	}
+	if v >= 1_000 {
+		return strconv.FormatFloat(float64(v)/1000, 'f', 0, 64) + "K"
+	}
+	return strconv.FormatInt(v, 10)
+}
+
+
+
 func appendPageNav(rows [][]inlineKeyboardButton, page, total, pageSize int, prefix string) [][]inlineKeyboardButton {
 	if total <= pageSize {
 		return rows
@@ -377,6 +884,12 @@ func clampPage(page, total, pageSize int) int {
 func workspacePagePrefix(prefix string) string {
 	if prefix == "newws:" {
 		return "newwsp:"
+	}
+	if prefix == "mws:" {
+		return "mwp:"
+	}
+	if prefix == "msws:" {
+		return "mswp:"
 	}
 	return "wp:"
 }

@@ -9,6 +9,7 @@ import "context"
 type Runner interface {
 	Prompt(ctx context.Context, req StartRequest, message string) error
 	Steer(ctx context.Context, req StartRequest, message string) error
+	AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo, error)
 }
 
 type StartRequest struct {
@@ -18,4 +19,14 @@ type StartRequest struct {
 	TopicID   int
 	Model     string
 	Existing  bool
+}
+
+type ModelInfo struct {
+	Provider      string
+	ID            string
+	Name          string
+	ContextWindow int64
+	MaxTokens     int64
+	Reasoning     bool
+	Inputs        []string
 }

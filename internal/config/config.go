@@ -86,6 +86,45 @@ func Load() (Config, Paths, error) {
 	return cfg, paths, nil
 }
 
+func SetGlobalModel(path, model string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	if len(doc.Content) == 0 {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("config root must be a YAML mapping")
+	}
+	value := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: model}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "global_model" {
+			root.Content[i+1] = value
+			return writeYAML(path, &doc)
+		}
+	}
+	root.Content = append(root.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "global_model"},
+		value,
+	)
+	return writeYAML(path, &doc)
+}
+
+func writeYAML(path string, doc *yaml.Node) error {
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
 func ResolvePaths() (Paths, error) {
 	if os.Getenv("PICO_ENV") == "dev" {
 		wd, err := os.Getwd()

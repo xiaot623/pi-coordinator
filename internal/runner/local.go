@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,9 +24,11 @@ type LocalOptions struct {
 type Options = LocalOptions
 
 type Local struct {
-	opts  LocalOptions
-	mu    sync.Mutex
-	procs map[string]*LocalProcess
+	opts        LocalOptions
+	mu          sync.Mutex
+	procs       map[string]*LocalProcess
+	models      []ModelInfo
+	modelsReady bool
 }
 
 var _ Runner = (*Local)(nil)
@@ -73,6 +76,28 @@ func (l *Local) Steer(ctx context.Context, req StartRequest, message string) err
 	return proc.Send(map[string]any{"type": "prompt", "message": message})
 }
 
+func (l *Local) AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo, error) {
+	l.mu.Lock()
+	if l.modelsReady && !refresh {
+		models := cloneModels(l.models)
+		l.mu.Unlock()
+		return models, nil
+	}
+	l.mu.Unlock()
+
+	models, err := l.queryAvailableModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	l.mu.Lock()
+	l.models = cloneModels(models)
+	l.modelsReady = true
+	cached := cloneModels(l.models)
+	l.mu.Unlock()
+	return cached, nil
+}
+
 func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bool, error) {
 	l.mu.Lock()
 	if proc := l.procs[req.SessionID]; proc != nil {
@@ -80,6 +105,10 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 		return proc, false, nil
 	}
 	l.mu.Unlock()
+
+	if _, err := l.AvailableModels(ctx, false); err != nil && l.opts.Logger != nil {
+		l.opts.Logger.Warn("cache pi models failed", "error", err)
+	}
 
 	args := []string{"--mode", "rpc", "--session-dir", l.opts.SessionDir, "--topic", intString(req.TopicID)}
 	if req.SessionID != "" {
@@ -111,6 +140,81 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 	l.mu.Unlock()
 	go l.watch(proc, stdout)
 	return proc, true, nil
+}
+
+func (l *Local) queryAvailableModels(ctx context.Context) ([]ModelInfo, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(queryCtx, l.opts.Binary, "--mode", "rpc", "--no-session")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(map[string]any{"id": "models_1", "type": "get_available_models"})
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return nil, err
+	}
+	if _, err := stdin.Write(append(payload, '\n')); err != nil {
+		_ = cmd.Process.Kill()
+		return nil, err
+	}
+	_ = stdin.Close()
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	var models []ModelInfo
+	var responseErr error
+	found := false
+	for scanner.Scan() {
+		var resp struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Command string `json:"command"`
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+			Data    struct {
+				Models []ModelInfo `json:"models"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			continue
+		}
+		if resp.ID != "models_1" || resp.Type != "response" || resp.Command != "get_available_models" {
+			continue
+		}
+		found = true
+		if !resp.Success {
+			responseErr = errors.New(resp.Error)
+			continue
+		}
+		models = resp.Data.Models
+	}
+	if err := scanner.Err(); err != nil && responseErr == nil {
+		responseErr = err
+	}
+	if err := cmd.Wait(); err != nil && responseErr == nil && !found {
+		responseErr = err
+	}
+	if responseErr != nil {
+		return nil, responseErr
+	}
+	if queryCtx.Err() != nil {
+		return nil, queryCtx.Err()
+	}
+	if len(models) == 0 {
+		return nil, errors.New("pi returned no available models")
+	}
+	return models, nil
 }
 
 func (l *Local) watch(proc *LocalProcess, r io.Reader) {
@@ -181,4 +285,40 @@ func (p *LocalProcess) setStreaming(v bool) {
 
 func intString(v int) string {
 	return strconv.Itoa(v)
+}
+
+func cloneModels(models []ModelInfo) []ModelInfo {
+	out := make([]ModelInfo, len(models))
+	for i, model := range models {
+		out[i] = model
+		out[i].Inputs = append([]string(nil), model.Inputs...)
+	}
+	return out
+}
+
+func (m *ModelInfo) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Provider      string   `json:"provider"`
+		ID            string   `json:"id"`
+		Name          string   `json:"name"`
+		ContextWindow int64    `json:"contextWindow"`
+		MaxTokens     int64    `json:"maxTokens"`
+		Reasoning     bool     `json:"reasoning"`
+		Input         []string `json:"input"`
+		Inputs        []string `json:"inputs"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Provider = strings.TrimSpace(raw.Provider)
+	m.ID = strings.TrimSpace(raw.ID)
+	m.Name = strings.TrimSpace(raw.Name)
+	m.ContextWindow = raw.ContextWindow
+	m.MaxTokens = raw.MaxTokens
+	m.Reasoning = raw.Reasoning
+	m.Inputs = raw.Inputs
+	if len(m.Inputs) == 0 {
+		m.Inputs = raw.Input
+	}
+	return nil
 }
