@@ -156,7 +156,7 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 						continue
 					}
 					lastReload = time.Now()
-					
+
 					// Re-load the config
 					// We read directly instead of Load() because Load() re-checks defaults
 					// But Load() also expands paths. We should probably just call a private load or re-resolve.

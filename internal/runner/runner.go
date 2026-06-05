@@ -13,12 +13,15 @@ type Runner interface {
 }
 
 type StartRequest struct {
-	SessionID string
-	Title     string
-	Workspace string
-	TopicID   int
-	Model     string
-	Existing  bool
+	SessionID            string
+	Title                string
+	Workspace            string
+	TopicID              int
+	Model                string
+	Existing             bool
+	Role                 string
+	TraceTelegramToken   string
+	TraceTelegramChatIDs []int64
 }
 
 type ModelInfo struct {

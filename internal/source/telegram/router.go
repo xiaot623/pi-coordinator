@@ -51,12 +51,17 @@ func (r *Router) handleCommand(ctx context.Context, update Update) {
 	if handler, ok := r.commandHandlers[cmd]; ok {
 		handler(ctx, r.bot, update)
 	} else {
-		r.bot.send(msg.Chat.ID, "Unknown command. Available: /workspace /new /sync /pin /unpin /model", nil)
+		r.bot.send(msg.Chat.ID, "Unknown command. Available: /help /workspace /new /sync /pin /unpin /model /bots", nil)
 	}
 }
 
 // HandleUpdate routes the incoming update to the appropriate handler.
 func (r *Router) HandleUpdate(ctx context.Context, update Update) {
+	if update.ManagedBot != nil {
+		r.bot.handleManagedBotUpdated(ctx, update.ManagedBot)
+		return
+	}
+
 	if update.CallbackQuery != nil {
 		if update.CallbackQuery.From == nil || !r.bot.allowed(update.CallbackQuery.From.ID) {
 			return
@@ -88,6 +93,11 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 		return
 	}
 	if !r.bot.allowed(msg.From.ID) {
+		return
+	}
+
+	if msg.ManagedBotCreated != nil {
+		r.bot.handleManagedBotCreated(ctx, msg.Chat.ID, msg.ManagedBotCreated)
 		return
 	}
 

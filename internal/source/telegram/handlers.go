@@ -14,13 +14,14 @@ import (
 // registerHandlers sets up all routes for the Telegram bot.
 func (b *Bot) registerHandlers() {
 	// Commands
-	b.router.Command("start", handleStart)
+	b.router.Command("help", handleHelp)
 	b.router.Command("sync", handleSync)
 	b.router.Command("workspace", handleWorkspaceCmd)
 	b.router.Command("new", handleNewCmd)
 	b.router.Command("pin", handlePinCmd)
 	b.router.Command("unpin", handleUnpin)
 	b.router.Command("model", handleModelCmd)
+	b.router.Command("bots", handleBotsCmd)
 
 	// Generic text messages
 	b.router.Text(handlePrivateMessage)
@@ -53,11 +54,12 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("sessions:", handleSessionsList)
 	b.router.Callback("new:", handleNewCallback)
 	b.router.Callback("pin:", handlePinCallback)
+	b.router.Callback("trace:retry", handleTraceRetry)
 }
 
 // -- Command Handlers --
 
-func handleStart(ctx context.Context, b *Bot, update Update) {
+func handleHelp(ctx context.Context, b *Bot, update Update) {
 	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, or /new to start a task.", nil)
 }
 
@@ -84,7 +86,7 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 			return
 		}
 		if prompt != "" {
-			startNewTask(ctx, b, update.Message.Chat.ID, update.Message.From.ID, ws.ID, prompt)
+			startNewTask(ctx, b, update.Message.Chat, update.Message.From.ID, ws.ID, prompt)
 			return
 		}
 		promptForPinnedNewTask(b, update.Message.Chat, ws.Path)
@@ -131,6 +133,10 @@ func handleModelCmd(ctx context.Context, b *Bot, update Update) {
 	b.send(update.Message.Chat.ID, modelScopeText(refresh), modelScopeKeyboard())
 }
 
+func handleBotsCmd(ctx context.Context, b *Bot, update Update) {
+	b.listManagedBots(update.Message.Chat.ID)
+}
+
 // -- Message Handlers --
 
 func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
@@ -143,11 +149,11 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 		switch p.Kind {
 		case "await_new_prompt":
 			b.clearPending(userID)
-			startNewTask(ctx, b, chatID, userID, p.WorkspaceID, text)
+			startNewTask(ctx, b, msg.Chat, userID, p.WorkspaceID, text)
 			return
 		case "await_resume_prompt":
 			b.clearPending(userID)
-			resumeSession(ctx, b, chatID, userID, p.SessionID, text)
+			resumeSession(ctx, b, msg.Chat, userID, p.SessionID, text)
 			return
 		}
 	}
@@ -158,7 +164,7 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 			b.send(chatID, "Pinned workspace is unavailable: "+err.Error(), nil)
 			return
 		}
-		startNewTask(ctx, b, chatID, userID, ws.ID, text)
+		startNewTask(ctx, b, msg.Chat, userID, ws.ID, text)
 		return
 	}
 	if !msg.Chat.IsPrivate() {
@@ -212,11 +218,21 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 		TopicID:   sess.TopicID,
 		Model:     b.app.ResolveModel(sess, ws),
 		Existing:  true,
+		Role:      genericRole,
+	}
+	rememberTraceRetry(b, msg.From.ID, "retry_resume_task", msg.Chat, 0, sess.ID, msg.Text)
+	if traceBot, err := b.ensureTraceBot(ctx, req.Role, msg.Chat.ID); err != nil {
+		return
+	} else {
+		req.TraceTelegramToken = traceBot.Token
+		req.TraceTelegramChatIDs = traceBot.ChatIDs
 	}
 
 	if err := b.app.Runner().Steer(ctx, req, msg.Text); err != nil {
 		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to send to pi: "+err.Error(), nil)
+		return
 	}
+	clearTraceRetry(b, msg.From.ID)
 }
 
 // -- Callbacks (Model related) --
@@ -251,6 +267,44 @@ func handleChooseModelScope(ctx context.Context, b *Bot, update Update) {
 	}
 	b.setPending(q.From.ID, PendingState{Kind: "model", ModelScope: scope})
 	editModelProviders(ctx, b, q.Message.Chat.ID, q.Message.MessageID, scope)
+}
+
+func handleTraceRetry(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	p, ok := b.getPending(q.From.ID)
+	if !ok {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "No pending trace setup to retry.", nil)
+		return
+	}
+	chat := Chat{ID: p.TaskChatID, Type: p.TaskChatType}
+	if chat.ID == 0 {
+		chat = q.Message.Chat
+	}
+	switch p.Kind {
+	case "retry_new_task":
+		startNewTask(ctx, b, chat, q.From.ID, p.WorkspaceID, p.Prompt)
+	case "retry_resume_task":
+		resumeSession(ctx, b, chat, q.From.ID, p.SessionID, p.Prompt)
+	default:
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "No pending trace setup to retry.", nil)
+	}
+}
+
+func rememberTraceRetry(b *Bot, userID int64, kind string, chat Chat, workspaceID int64, sessionID, prompt string) {
+	b.setPending(userID, PendingState{
+		Kind:         kind,
+		WorkspaceID:  workspaceID,
+		SessionID:    sessionID,
+		Prompt:       prompt,
+		TaskChatID:   chat.ID,
+		TaskChatType: chat.Type,
+	})
+}
+
+func clearTraceRetry(b *Bot, userID int64) {
+	if p, ok := b.getPending(userID); ok && (p.Kind == "retry_new_task" || p.Kind == "retry_resume_task") {
+		b.clearPending(userID)
+	}
 }
 
 func handleChooseModelProvider(ctx context.Context, b *Bot, update Update) {
@@ -423,7 +477,7 @@ func handleChooseWorkspaceForNewTask(ctx context.Context, b *Bot, update Update)
 	p, _ := b.getPending(q.From.ID)
 	if p.Prompt != "" {
 		b.clearPending(q.From.ID)
-		startNewTask(ctx, b, q.Message.Chat.ID, q.From.ID, id, p.Prompt)
+		startNewTask(ctx, b, q.Message.Chat, q.From.ID, id, p.Prompt)
 		return
 	}
 	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
@@ -535,21 +589,28 @@ func findWorkspaceForPin(ctx context.Context, b *Bot, query string) (store.Works
 
 // -- Action Implementations --
 
-func startNewTask(ctx context.Context, b *Bot, chatID, userID int64, workspaceID int64, prompt string) {
+func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspaceID int64, prompt string) {
+	chatID := chat.ID
 	ws, err := b.app.Store().GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		b.send(chatID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
 
+	rememberTraceRetry(b, userID, "retry_new_task", chat, workspaceID, "", prompt)
+	traceBot, err := b.ensureTraceBot(ctx, genericRole, chatID)
+	if err != nil {
+		return
+	}
+
 	title := topicTitle(prompt)
-	topicID, err := b.createForumTopic(title)
+	topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, title)
 	if err != nil {
 		b.send(chatID, "Failed to create topic: "+err.Error(), nil)
 		return
 	}
 
-	goalID, err := b.sendTopicMessage(topicID, "🎯 "+prompt, nil)
+	goalID, err := b.sendTopicMessage(b.app.Config().Telegram.GroupChatID, topicID, "🎯 "+prompt, nil)
 	if err == nil {
 		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
 	}
@@ -567,17 +628,22 @@ func startNewTask(ctx context.Context, b *Bot, chatID, userID int64, workspaceID
 		Workspace: ws.Path,
 		TopicID:   topicID,
 		Model:     b.app.ResolveModel(sess, ws),
+		Role:      genericRole,
 	}
+	req.TraceTelegramToken = traceBot.Token
+	req.TraceTelegramChatIDs = traceBot.ChatIDs
 
 	if err := b.app.Runner().Prompt(ctx, req, prompt); err != nil {
 		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
+	clearTraceRetry(b, userID)
 
 	b.send(chatID, fmt.Sprintf("Created topic: %s", title), taskKeyboard(workspaceID, b.pinned(userID) == ws.Path))
 }
 
-func resumeSession(ctx context.Context, b *Bot, chatID, userID int64, sessionID, prompt string) {
+func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID, prompt string) {
+	chatID := chat.ID
 	sess, err := b.app.Store().GetSession(ctx, sessionID)
 	if err != nil {
 		b.send(chatID, "Failed to read session: "+err.Error(), nil)
@@ -589,13 +655,19 @@ func resumeSession(ctx context.Context, b *Bot, chatID, userID int64, sessionID,
 		return
 	}
 
+	rememberTraceRetry(b, userID, "retry_resume_task", chat, 0, sessionID, prompt)
+	traceBot, err := b.ensureTraceBot(ctx, genericRole, chatID)
+	if err != nil {
+		return
+	}
+
 	if sess.TopicID == 0 {
-		topicID, err := b.createForumTopic(topicTitle(prompt))
+		topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, topicTitle(prompt))
 		if err != nil {
 			b.send(chatID, "Failed to create topic: "+err.Error(), nil)
 			return
 		}
-		goalID, _ := b.sendTopicMessage(topicID, "🎯 "+prompt, nil)
+		goalID, _ := b.sendTopicMessage(b.app.Config().Telegram.GroupChatID, topicID, "🎯 "+prompt, nil)
 		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
 		_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
 		sess.TopicID = topicID
@@ -608,11 +680,15 @@ func resumeSession(ctx context.Context, b *Bot, chatID, userID int64, sessionID,
 		TopicID:   sess.TopicID,
 		Model:     b.app.ResolveModel(sess, ws),
 		Existing:  true,
+		Role:      genericRole,
 	}
+	req.TraceTelegramToken = traceBot.Token
+	req.TraceTelegramChatIDs = traceBot.ChatIDs
 
 	if err := b.app.Runner().Prompt(ctx, req, prompt); err != nil {
 		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
+	clearTraceRetry(b, userID)
 	b.send(chatID, "Sent to session.", taskKeyboard(ws.ID, b.pinned(userID) == ws.Path))
 }

@@ -122,6 +122,12 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 	}
 	cmd := exec.CommandContext(ctx, l.opts.Binary, args...)
 	cmd.Dir = req.Workspace
+	if req.TraceTelegramToken != "" && len(req.TraceTelegramChatIDs) > 0 {
+		cmd.Env = append(cmd.Environ(),
+			"PI_TRACE_TELEGRAM_BOT_TOKEN="+req.TraceTelegramToken,
+			"PI_TRACE_TELEGRAM_CHAT_IDS="+int64ListString(req.TraceTelegramChatIDs),
+		)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, false, err
@@ -140,6 +146,17 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 	l.mu.Unlock()
 	go l.watch(proc, stdout)
 	return proc, true, nil
+}
+
+func int64ListString(values []int64) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		parts = append(parts, strconv.FormatInt(value, 10))
+	}
+	return strings.Join(parts, ",")
 }
 
 func (l *Local) queryAvailableModels(ctx context.Context) ([]ModelInfo, error) {

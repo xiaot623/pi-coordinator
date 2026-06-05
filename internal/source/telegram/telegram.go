@@ -34,6 +34,8 @@ type PendingState struct {
 	WorkspaceID     int64
 	SessionID       string
 	Prompt          string
+	TaskChatID      int64
+	TaskChatType    string
 	PromptChatID    int64
 	PromptMessageID int
 	ModelScope      string
@@ -196,11 +198,15 @@ func (b *Bot) unpinTrackedMessages(ctx context.Context, userID int64) {
 // -- Telegram API Helpers --
 
 func (b *Bot) callTelegramCtx(ctx context.Context, method string, payload map[string]any, out any, timeout time.Duration) error {
+	return b.callTelegramWithTokenCtx(ctx, b.app.Config().Telegram.BotToken, method, payload, out, timeout)
+}
+
+func (b *Bot) callTelegramWithTokenCtx(ctx context.Context, token, method string, payload map[string]any, out any, timeout time.Duration) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	url := "https://api.telegram.org/bot" + b.app.Config().Telegram.BotToken + "/" + method
+	url := "https://api.telegram.org/bot" + token + "/" + method
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -229,7 +235,7 @@ func (b *Bot) getUpdates(ctx context.Context, offset int) ([]Update, error) {
 		Description string   `json:"description"`
 	}
 	err := b.callTelegramCtx(ctx, "getUpdates", map[string]any{
-		"offset": offset, "timeout": 30, "allowed_updates": []string{"message", "callback_query"},
+		"offset": offset, "timeout": 30, "allowed_updates": []string{"message", "callback_query", "managed_bot"},
 	}, &resp, 40*time.Second)
 	if err != nil {
 		return nil, err
@@ -244,13 +250,14 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 	var resp telegramOK
 	err := b.callTelegramCtx(ctx, "setMyCommands", map[string]any{
 		"commands": []map[string]string{
-			{"command": "start", "description": "Show help"},
+			{"command": "help", "description": "Show help"},
 			{"command": "workspace", "description": "Choose a workspace and session"},
 			{"command": "new", "description": "Start a new task"},
 			{"command": "sync", "description": "Import historical sessions"},
 			{"command": "pin", "description": "Pin a workspace"},
 			{"command": "unpin", "description": "Clear the pinned workspace"},
 			{"command": "model", "description": "Configure model settings"},
+			{"command": "bots", "description": "Show managed role bots"},
 		},
 	}, &resp, 20*time.Second)
 	if err != nil {
@@ -332,7 +339,7 @@ func (b *Bot) editMessageText(chatID int64, messageID int, text string, replyMar
 	return nil
 }
 
-func (b *Bot) createForumTopic(name string) (int, error) {
+func (b *Bot) createForumTopic(chatID int64, name string) (int, error) {
 	var resp struct {
 		OK     bool `json:"ok"`
 		Result struct {
@@ -340,7 +347,7 @@ func (b *Bot) createForumTopic(name string) (int, error) {
 		} `json:"result"`
 		Description string `json:"description"`
 	}
-	if err := b.callTelegram("createForumTopic", map[string]any{"chat_id": b.app.Config().Telegram.GroupChatID, "name": name}, &resp); err != nil {
+	if err := b.callTelegram("createForumTopic", map[string]any{"chat_id": chatID, "name": name}, &resp); err != nil {
 		return 0, err
 	}
 	if !resp.OK {
@@ -349,8 +356,8 @@ func (b *Bot) createForumTopic(name string) (int, error) {
 	return resp.Result.MessageThreadID, nil
 }
 
-func (b *Bot) sendTopicMessage(topicID int, text string, replyMarkup any) (int, error) {
-	return b.sendMessage(b.app.Config().Telegram.GroupChatID, topicID, text, replyMarkup)
+func (b *Bot) sendTopicMessage(chatID int64, topicID int, text string, replyMarkup any) (int, error) {
+	return b.sendMessage(chatID, topicID, text, replyMarkup)
 }
 
 func (b *Bot) pinChatMessage(chatID int64, messageID int) error {
@@ -419,9 +426,10 @@ func (b *Bot) answerCallback(id, text string) {
 // -- Telegram Types --
 
 type Update struct {
-	UpdateID      int            `json:"update_id"`
-	Message       *Message       `json:"message"`
-	CallbackQuery *CallbackQuery `json:"callback_query"`
+	UpdateID      int                `json:"update_id"`
+	Message       *Message           `json:"message"`
+	CallbackQuery *CallbackQuery     `json:"callback_query"`
+	ManagedBot    *ManagedBotUpdated `json:"managed_bot"`
 }
 
 type CallbackQuery struct {
@@ -432,17 +440,21 @@ type CallbackQuery struct {
 }
 
 type Message struct {
-	MessageID       int      `json:"message_id"`
-	MessageThreadID int      `json:"message_thread_id"`
-	From            *User    `json:"from"`
-	Chat            Chat     `json:"chat"`
-	Text            string   `json:"text"`
-	ReplyToMessage  *Message `json:"reply_to_message"`
+	MessageID         int                `json:"message_id"`
+	MessageThreadID   int                `json:"message_thread_id"`
+	From              *User              `json:"from"`
+	Chat              Chat               `json:"chat"`
+	Text              string             `json:"text"`
+	ReplyToMessage    *Message           `json:"reply_to_message"`
+	ManagedBotCreated *ManagedBotCreated `json:"managed_bot_created"`
 }
 
 type User struct {
-	ID    int64 `json:"id"`
-	IsBot bool  `json:"is_bot"`
+	ID            int64  `json:"id"`
+	IsBot         bool   `json:"is_bot"`
+	FirstName     string `json:"first_name"`
+	Username      string `json:"username"`
+	CanManageBots bool   `json:"can_manage_bots"`
 }
 
 type Chat struct {
@@ -484,4 +496,14 @@ func (m *Message) CommandArguments() string {
 type telegramOK struct {
 	OK          bool   `json:"ok"`
 	Description string `json:"description"`
+}
+
+type ManagedBotCreated struct {
+	RequestID int   `json:"request_id"`
+	Bot       *User `json:"bot"`
+}
+
+type ManagedBotUpdated struct {
+	User *User `json:"user"`
+	Bot  *User `json:"bot"`
 }
