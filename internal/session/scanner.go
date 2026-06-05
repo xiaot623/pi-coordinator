@@ -29,8 +29,7 @@ func Scan(ctx context.Context, root string) ([]Discovered, error) {
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			name := d.Name()
-			if strings.Contains(name, "--private-tmp--") {
+			if isIgnoredDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -45,6 +44,13 @@ func Scan(ctx context.Context, root string) ([]Discovered, error) {
 		return nil
 	})
 	return out, err
+}
+
+func isIgnoredDir(name string) bool {
+	lower := strings.ToLower(name)
+	return (strings.HasPrefix(lower, "--private-") && strings.HasSuffix(lower, "--")) ||
+		strings.Contains(lower, "tmp") ||
+		strings.Contains(lower, "temp")
 }
 
 func readSessionFile(path string) (Discovered, bool) {
