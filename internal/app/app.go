@@ -149,7 +149,7 @@ func (a *App) handlePrivateMessage(ctx context.Context, msg *tgMessage) {
 			return
 		case "await_resume_prompt":
 			a.clearPending(msg.From.ID)
-			a.resumeSession(ctx, msg.Chat.ID, p.SessionID, text)
+			a.resumeSession(ctx, msg.Chat.ID, msg.From.ID, p.SessionID, text)
 			return
 		}
 	}
@@ -393,7 +393,7 @@ func (a *App) startNewTask(ctx context.Context, chatID, userID int64, workspaceI
 		a.send(chatID, "Failed to create topic: "+err.Error(), nil)
 		return
 	}
-	goalID, err := a.sendTopicMessage(topicID, "🎯 "+prompt, taskKeyboard(workspaceID, a.pinned(userID) == ws.Path))
+	goalID, err := a.sendTopicMessage(topicID, "🎯 "+prompt, nil)
 	if err == nil {
 		_ = a.pinChatMessage(goalID)
 	}
@@ -408,10 +408,10 @@ func (a *App) startNewTask(ctx context.Context, chatID, userID int64, workspaceI
 		a.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
-	a.send(chatID, fmt.Sprintf("Created topic: %s", title), nil)
+	a.send(chatID, fmt.Sprintf("Created topic: %s", title), taskKeyboard(workspaceID, a.pinned(userID) == ws.Path))
 }
 
-func (a *App) resumeSession(ctx context.Context, chatID int64, sessionID, prompt string) {
+func (a *App) resumeSession(ctx context.Context, chatID, userID int64, sessionID, prompt string) {
 	sess, err := a.store.GetSession(ctx, sessionID)
 	if err != nil {
 		a.send(chatID, "Failed to read session: "+err.Error(), nil)
@@ -428,7 +428,7 @@ func (a *App) resumeSession(ctx context.Context, chatID int64, sessionID, prompt
 			a.send(chatID, "Failed to create topic: "+err.Error(), nil)
 			return
 		}
-		goalID, _ := a.sendTopicMessage(topicID, "🎯 "+prompt, taskKeyboard(ws.ID, false))
+		goalID, _ := a.sendTopicMessage(topicID, "🎯 "+prompt, nil)
 		_ = a.pinChatMessage(goalID)
 		_ = a.store.SetSessionTopic(ctx, sess.ID, topicID, goalID)
 		sess.TopicID = topicID
@@ -438,7 +438,7 @@ func (a *App) resumeSession(ctx context.Context, chatID int64, sessionID, prompt
 		a.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
-	a.send(chatID, "Sent to session.", nil)
+	a.send(chatID, "Sent to session.", taskKeyboard(ws.ID, a.pinned(userID) == ws.Path))
 }
 
 func (a *App) ensureWorkspace(ctx context.Context, path string) (store.Workspace, error) {
