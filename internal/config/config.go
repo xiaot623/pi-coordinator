@@ -1,13 +1,14 @@
 package config
 
 import (
+	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"context"
 
 	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
@@ -62,7 +63,7 @@ func Load() (Config, Paths, error) {
 		if err := os.MkdirAll(filepath.Dir(paths.ConfigPath), 0o755); err != nil {
 			return Config{}, paths, err
 		}
-		if err := os.WriteFile(paths.ConfigPath, []byte(defaultConfig()), 0o600); err != nil {
+		if err := os.WriteFile(paths.ConfigPath, defaultConfig, 0o600); err != nil {
 			return Config{}, paths, err
 		}
 		return Config{}, paths, ErrConfigMissing
@@ -219,17 +220,5 @@ func ExpandPath(path string) string {
 	return path
 }
 
-func defaultConfig() string {
-	return `telegram:
-  bot_token: ""
-  group_chat_id: 0
-  allowed_users: []
-
-runner:
-  idle_timeout: 5m
-  session_dir: "~/.pi/agent/sessions"
-  binary: "pi"
-
-global_model: ""
-`
-}
+//go:embed default_config.yaml
+var defaultConfig []byte

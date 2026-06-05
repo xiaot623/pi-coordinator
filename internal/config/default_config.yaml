@@ -1,0 +1,11 @@
+telegram:
+  bot_token: ""
+  group_chat_id: 0
+  allowed_users: []
+
+runner:
+  idle_timeout: 5m
+  session_dir: "~/.pi/agent/sessions"
+  binary: "pi"
+
+global_model: ""
