@@ -1,0 +1,7 @@
+{
+  "scripts": {
+    "dev": "PICO_ENV=dev go run ./cmd/pico",
+    "build": "go build -o pico ./cmd/pico",
+    "check": "go vet ./..."
+  }
+}

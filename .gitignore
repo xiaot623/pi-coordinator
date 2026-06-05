@@ -1,0 +1,5 @@
+dev_assets/
+/pico
+*.db
+*.db-shm
+*.db-wal
