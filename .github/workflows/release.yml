@@ -85,9 +85,5 @@ jobs:
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'pre') }}
 
       - name: Publish to npm
-        run: |
-          if echo "${{ github.ref_name }}" | grep -qiE 'rc|alpha|beta|pre'; then
-            npm publish --tag next --access public --provenance
-          else
-            npm publish --access public --provenance
-          fi
+        if: ${{ !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'pre') }}
+        run: npm publish --access public --provenance
