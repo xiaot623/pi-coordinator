@@ -1,7 +1,37 @@
 {
+  "name": "@hahahhh/pi-coordinator",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Telegram coordinator for pi coding sessions",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaot623/pi-coordinator.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-coordinator",
+    "pico"
+  ],
+  "bin": {
+    "pico": "./bin/pico.js"
+  },
+  "files": [
+    "bin/"
+  ],
   "scripts": {
     "dev": "PICO_ENV=dev go run ./cmd/pico",
-    "build": "go build -o pico ./cmd/pico",
-    "check": "go vet ./..."
+    "build": "node scripts/build-native.js",
+    "build:go": "go build -trimpath -o pico ./cmd/pico",
+    "check": "go vet ./...",
+    "test": "go test ./...",
+    "pre_release": "npm version prerelease --preid=rc -m \"chore: pre-release v%s\" && git push origin HEAD --follow-tags",
+    "publish:rc": "npm publish --access public --tag next",
+    "publish:release": "npm publish --access public --tag latest",
+    "release:patch": "node scripts/release.js patch",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
