@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"context"
 
+	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
 )
 
@@ -123,6 +125,69 @@ func writeYAML(path string, doc *yaml.Node) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
+}
+
+func Watch(ctx context.Context, configPath string, onChange func(Config, error)) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+
+	if err := watcher.Add(configPath); err != nil {
+		watcher.Close()
+		return err
+	}
+
+	go func() {
+		defer watcher.Close()
+		var lastReload time.Time
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+					// Debounce quick writes (e.g., from some editors like vim)
+					if time.Since(lastReload) < 500*time.Millisecond {
+						continue
+					}
+					lastReload = time.Now()
+					
+					// Re-load the config
+					// We read directly instead of Load() because Load() re-checks defaults
+					// But Load() also expands paths. We should probably just call a private load or re-resolve.
+					// Actually, the easiest is to read the file and Unmarshal again.
+					data, err := os.ReadFile(configPath)
+					if err != nil {
+						onChange(Config{}, err)
+						continue
+					}
+					var cfg Config
+					cfg.Runner.IdleTimeout.Duration = 5 * time.Minute
+					cfg.Runner.SessionDir = "~/.pi/agent/sessions"
+					cfg.Runner.Binary = "pi"
+					if err := yaml.Unmarshal(data, &cfg); err != nil {
+						onChange(Config{}, err)
+						continue
+					}
+					cfg.Runner.SessionDir = ExpandPath(cfg.Runner.SessionDir)
+					if cfg.Runner.Binary == "" {
+						cfg.Runner.Binary = "pi"
+					}
+					onChange(cfg, nil)
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				onChange(Config{}, err)
+			}
+		}
+	}()
+	return nil
 }
 
 func ResolvePaths() (Paths, error) {

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/config"
@@ -23,7 +24,7 @@ import (
 )
 
 type App struct {
-	cfg    config.Config
+	cfg    atomic.Pointer[config.Config]
 	paths  config.Paths
 	log    *slog.Logger
 	store  *store.Store
@@ -60,15 +61,21 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		IdleTimeout: cfg.Runner.IdleTimeout.Duration,
 		Logger:      logger,
 	})
-	return &App{
-		cfg: cfg, paths: paths, log: logger, store: st, runner: rm,
+	a := &App{
+		paths: paths, log: logger, store: st, runner: rm,
 		pins: map[int64]string{}, pending: map[int64]pending{},
-	}, nil
+	}
+	a.cfg.Store(&cfg)
+	return a, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	defer a.store.Close()
 	a.log.Info("pico started", "db", a.paths.DBPath)
+	
+	// Start config hot-reloading
+	go a.watchConfig(ctx)
+	
 	if err := a.registerCommands(ctx); err != nil {
 		a.log.Warn("register telegram commands failed", "error", err)
 	}
@@ -95,6 +102,20 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
+func (a *App) watchConfig(ctx context.Context) {
+	err := config.Watch(ctx, a.paths.ConfigPath, func(cfg config.Config, err error) {
+		if err != nil {
+			a.log.Warn("config reload failed", "error", err)
+			return
+		}
+		a.cfg.Store(&cfg)
+		a.log.Info("config hot-reloaded successfully")
+	})
+	if err != nil {
+		a.log.Warn("failed to watch config", "error", err)
+	}
+}
+
 func (a *App) handleUpdate(ctx context.Context, update tgUpdate) {
 	if update.CallbackQuery != nil {
 		a.handleCallback(ctx, update.CallbackQuery)
@@ -111,7 +132,7 @@ func (a *App) handleUpdate(ctx context.Context, update tgUpdate) {
 		a.handlePrivateMessage(ctx, msg)
 		return
 	}
-	if msg.Chat.ID == a.cfg.Telegram.GroupChatID && msg.MessageThreadID != 0 && strings.TrimSpace(msg.Text) != "" {
+	if msg.Chat.ID == a.cfg.Load().Telegram.GroupChatID && msg.MessageThreadID != 0 && strings.TrimSpace(msg.Text) != "" {
 		a.handleTopicMessage(ctx, msg)
 	}
 }
@@ -288,7 +309,7 @@ func (a *App) handleTopicMessage(ctx context.Context, msg *tgMessage) {
 }
 
 func (a *App) syncSessions(ctx context.Context, chatID int64) {
-	items, err := session.Scan(ctx, a.cfg.Runner.SessionDir)
+	items, err := session.Scan(ctx, a.cfg.Load().Runner.SessionDir)
 	if err != nil {
 		a.send(chatID, "Sync failed: "+err.Error(), nil)
 		return
@@ -443,7 +464,6 @@ func (a *App) applyGlobalModel(chatID int64, messageID int, userID int64, model 
 		a.editMessageText(chatID, messageID, "Failed to update config: "+err.Error(), nil)
 		return
 	}
-	a.cfg.GlobalModel = model
 	a.clearPending(userID)
 	a.editMessageText(chatID, messageID, "Global model set to "+model+".", nil)
 }
@@ -655,9 +675,9 @@ func filterProviderModels(models []runner.ModelInfo, provider string) []runner.M
 }
 
 type modelButtonColumnWidths struct {
-	Name float64
-	Ctx  float64
-	Out  float64
+	Name  float64
+	Ctx   float64
+	Out   float64
 	Icons int
 }
 
@@ -725,7 +745,7 @@ func padRightVisual(s string, targetWidth float64) string {
 	enSpaces := int(diff / 1.1)
 	rem := diff - float64(enSpaces)*1.1
 	regSpaces := int(rem / 0.55)
-	
+
 	res := s
 	if enSpaces > 0 {
 		res += strings.Repeat("\u2002", enSpaces)
@@ -745,7 +765,7 @@ func padLeftVisual(s string, targetWidth float64) string {
 	enSpaces := int(diff / 1.1)
 	rem := diff - float64(enSpaces)*1.1
 	regSpaces := int(rem / 0.55)
-	
+
 	pad := ""
 	if enSpaces > 0 {
 		pad += strings.Repeat("\u2002", enSpaces)
@@ -804,7 +824,7 @@ func modelButtonText(model runner.ModelInfo, widths modelButtonColumnWidths) str
 	if model.MaxTokens > 0 {
 		out = padLeftVisual(compactNumber(model.MaxTokens), widths.Out)
 	}
-	
+
 	var icons []string
 	if model.Reasoning {
 		icons = append(icons, "💭")
@@ -817,7 +837,7 @@ func modelButtonText(model runner.ModelInfo, widths modelButtonColumnWidths) str
 			icons = append(icons, "🖼")
 		}
 	}
-	
+
 	iconStr := ""
 	// 模型能力 右对齐: 补全左侧缺失的图标宽度
 	padCount := widths.Icons - len(icons)
@@ -832,7 +852,6 @@ func modelButtonText(model runner.ModelInfo, widths modelButtonColumnWidths) str
 	}
 	return name + " \u2002📚" + ctx + " ↗ " + out + "\u2002" + iconStr
 }
-
 
 func modelDisplay(model runner.ModelInfo) string {
 	if model.Name != "" {
@@ -853,8 +872,6 @@ func compactNumber(v int64) string {
 	}
 	return strconv.FormatInt(v, 10)
 }
-
-
 
 func appendPageNav(rows [][]inlineKeyboardButton, page, total, pageSize int, prefix string) [][]inlineKeyboardButton {
 	if total <= pageSize {
@@ -973,11 +990,15 @@ func (a *App) resolveModel(sess store.Session, ws store.Workspace) string {
 	if ws.Model != "" {
 		return ws.Model
 	}
-	return a.cfg.GlobalModel
+	return a.getGlobalModel()
+}
+
+func (a *App) getGlobalModel() string {
+	return a.cfg.Load().GlobalModel
 }
 
 func (a *App) allowed(userID int64) bool {
-	for _, id := range a.cfg.Telegram.AllowedUsers {
+	for _, id := range a.cfg.Load().Telegram.AllowedUsers {
 		if id == userID {
 			return true
 		}
@@ -1039,7 +1060,7 @@ func (a *App) createForumTopic(name string) (int, error) {
 		} `json:"result"`
 		Description string `json:"description"`
 	}
-	if err := a.callTelegram("createForumTopic", map[string]any{"chat_id": a.cfg.Telegram.GroupChatID, "name": name}, &resp); err != nil {
+	if err := a.callTelegram("createForumTopic", map[string]any{"chat_id": a.cfg.Load().Telegram.GroupChatID, "name": name}, &resp); err != nil {
 		return 0, err
 	}
 	if !resp.OK {
@@ -1049,7 +1070,7 @@ func (a *App) createForumTopic(name string) (int, error) {
 }
 
 func (a *App) sendTopicMessage(topicID int, text string, replyMarkup any) (int, error) {
-	return a.sendMessage(a.cfg.Telegram.GroupChatID, topicID, text, replyMarkup)
+	return a.sendMessage(a.cfg.Load().Telegram.GroupChatID, topicID, text, replyMarkup)
 }
 
 func (a *App) sendMessage(chatID int64, topicID int, text string, replyMarkup any) (int, error) {
@@ -1094,7 +1115,7 @@ func (a *App) editMessageText(chatID int64, messageID int, text string, replyMar
 func (a *App) pinChatMessage(messageID int) error {
 	var resp telegramOK
 	err := a.callTelegram("pinChatMessage", map[string]any{
-		"chat_id": a.cfg.Telegram.GroupChatID, "message_id": messageID, "disable_notification": true,
+		"chat_id": a.cfg.Load().Telegram.GroupChatID, "message_id": messageID, "disable_notification": true,
 	}, &resp)
 	if err != nil {
 		return err
@@ -1132,7 +1153,7 @@ func (a *App) callTelegramCtx(ctx context.Context, method string, payload map[st
 	if err != nil {
 		return err
 	}
-	url := "https://api.telegram.org/bot" + a.cfg.Telegram.BotToken + "/" + method
+	url := "https://api.telegram.org/bot" + a.cfg.Load().Telegram.BotToken + "/" + method
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return err
