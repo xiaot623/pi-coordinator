@@ -40,6 +40,11 @@ type pending struct {
 	Prompt      string
 }
 
+const (
+	workspacePageSize = 10
+	sessionPageSize   = 8
+)
+
 func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, error) {
 	st, err := store.Open(paths.DBPath)
 	if err != nil {
@@ -62,6 +67,9 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 func (a *App) Run(ctx context.Context) error {
 	defer a.store.Close()
 	a.log.Info("pico started", "db", a.paths.DBPath)
+	if err := a.registerCommands(ctx); err != nil {
+		a.log.Warn("register telegram commands failed", "error", err)
+	}
 	offset := 0
 	for {
 		updates, err := a.getUpdates(ctx, offset)
@@ -110,24 +118,24 @@ func (a *App) handlePrivateMessage(ctx context.Context, msg *tgMessage) {
 	if msg.IsCommand() {
 		switch msg.Command() {
 		case "start":
-			a.send(msg.Chat.ID, "pico 已就绪。使用 /sync 同步历史会话，或 /new 发起新任务。", nil)
+			a.send(msg.Chat.ID, "pico is ready. Use /sync to import history, or /new to start a task.", nil)
 		case "sync":
 			a.syncSessions(ctx, msg.Chat.ID)
 		case "workspace":
 			a.clearPending(msg.From.ID)
-			a.sendWorkspaces(ctx, msg.Chat.ID, "选择 workspace：", "w:")
+			a.sendWorkspaces(ctx, msg.Chat.ID, "Choose a workspace:", "w:", 0)
 		case "new":
 			a.setPending(msg.From.ID, pending{Kind: "new_prompt", Prompt: strings.TrimSpace(msg.CommandArguments())})
-			a.sendWorkspaces(ctx, msg.Chat.ID, "选择 workspace：", "newws:")
+			a.sendWorkspaces(ctx, msg.Chat.ID, "Choose a workspace:", "newws:", 0)
 		case "unpin":
 			a.mu.Lock()
 			delete(a.pins, msg.From.ID)
 			a.mu.Unlock()
-			a.send(msg.Chat.ID, "已取消固定工作目录。", nil)
+			a.send(msg.Chat.ID, "Workspace pin cleared.", nil)
 		case "model":
-			a.send(msg.Chat.ID, "/model 的交互入口已预留；当前可先在配置或数据库中设置 provider/modelId。", nil)
+			a.send(msg.Chat.ID, "/model is reserved. For now, set provider/modelId in config or the database.", nil)
 		default:
-			a.send(msg.Chat.ID, "未知命令。可用：/workspace /new /sync /unpin /model", nil)
+			a.send(msg.Chat.ID, "Unknown command. Available: /workspace /new /sync /unpin /model", nil)
 		}
 		return
 	}
@@ -150,13 +158,13 @@ func (a *App) handlePrivateMessage(ctx context.Context, msg *tgMessage) {
 	if path := a.pinned(msg.From.ID); path != "" {
 		ws, err := a.ensureWorkspace(ctx, path)
 		if err != nil {
-			a.send(msg.Chat.ID, "固定目录不可用："+err.Error(), nil)
+			a.send(msg.Chat.ID, "Pinned workspace is unavailable: "+err.Error(), nil)
 			return
 		}
 		a.startNewTask(ctx, msg.Chat.ID, msg.From.ID, ws.ID, text)
 		return
 	}
-	a.send(msg.Chat.ID, "请先使用 /new 或 /workspace 选择工作目录。", nil)
+	a.send(msg.Chat.ID, "Choose a workspace first with /new or /workspace.", nil)
 }
 
 func (a *App) handleCallback(ctx context.Context, q *tgCallbackQuery) {
@@ -167,9 +175,15 @@ func (a *App) handleCallback(ctx context.Context, q *tgCallbackQuery) {
 	data := q.Data
 	chatID := q.Message.Chat.ID
 	switch {
+	case strings.HasPrefix(data, "wp:"):
+		page, _ := strconv.Atoi(strings.TrimPrefix(data, "wp:"))
+		a.editWorkspaces(ctx, chatID, q.Message.MessageID, "Choose a workspace:", "w:", page)
+	case strings.HasPrefix(data, "newwsp:"):
+		page, _ := strconv.Atoi(strings.TrimPrefix(data, "newwsp:"))
+		a.editWorkspaces(ctx, chatID, q.Message.MessageID, "Choose a workspace:", "newws:", page)
 	case strings.HasPrefix(data, "w:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "w:"), 10, 64)
-		a.sendSessions(ctx, chatID, id)
+		a.editSessions(ctx, chatID, q.Message.MessageID, id, 0)
 	case strings.HasPrefix(data, "newws:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "newws:"), 10, 64)
 		p, _ := a.getPending(q.From.ID)
@@ -179,33 +193,40 @@ func (a *App) handleCallback(ctx context.Context, q *tgCallbackQuery) {
 			return
 		}
 		a.setPending(q.From.ID, pending{Kind: "await_new_prompt", WorkspaceID: id})
-		a.send(chatID, "请输入任务描述。", nil)
+		a.send(chatID, "Send the task description.", nil)
 	case strings.HasPrefix(data, "ns:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "ns:"), 10, 64)
 		a.setPending(q.From.ID, pending{Kind: "await_new_prompt", WorkspaceID: id})
-		a.send(chatID, "请输入任务描述。", nil)
+		a.send(chatID, "Send the task description.", nil)
 	case strings.HasPrefix(data, "s:"):
 		sid := strings.TrimPrefix(data, "s:")
 		a.setPending(q.From.ID, pending{Kind: "await_resume_prompt", SessionID: sid})
-		a.send(chatID, "请输入要继续发送给该 session 的消息。", nil)
+		a.send(chatID, "Send the message to continue this session.", nil)
+	case strings.HasPrefix(data, "sp:"):
+		parts := strings.Split(strings.TrimPrefix(data, "sp:"), ":")
+		if len(parts) == 2 {
+			id, _ := strconv.ParseInt(parts[0], 10, 64)
+			page, _ := strconv.Atoi(parts[1])
+			a.editSessions(ctx, chatID, q.Message.MessageID, id, page)
+		}
 	case strings.HasPrefix(data, "sessions:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "sessions:"), 10, 64)
-		a.sendSessions(ctx, chatID, id)
+		a.sendSessions(ctx, chatID, id, 0)
 	case strings.HasPrefix(data, "new:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "new:"), 10, 64)
 		a.setPending(q.From.ID, pending{Kind: "await_new_prompt", WorkspaceID: id})
-		a.send(chatID, "请输入任务描述。", nil)
+		a.send(chatID, "Send the task description.", nil)
 	case strings.HasPrefix(data, "pin:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "pin:"), 10, 64)
 		ws, err := a.store.GetWorkspace(ctx, id)
 		if err != nil {
-			a.send(chatID, "固定失败："+err.Error(), nil)
+			a.send(chatID, "Pin failed: "+err.Error(), nil)
 			return
 		}
 		a.mu.Lock()
 		a.pins[q.From.ID] = ws.Path
 		a.mu.Unlock()
-		a.send(chatID, fmt.Sprintf("📌 已固定工作目录：%s\n后续所有消息将在此目录下直接创建新任务。\n/unpin 或重新 /workspace 可取消。", ws.Path), nil)
+		a.send(chatID, fmt.Sprintf("📌 Workspace pinned: %s\nNew private messages will create tasks in this workspace.\nUse /unpin or /workspace to change it.", ws.Path), nil)
 	}
 }
 
@@ -216,7 +237,7 @@ func (a *App) handleTopicMessage(ctx context.Context, msg *tgMessage) {
 	}
 	ws, err := a.store.GetWorkspace(ctx, sess.WorkspaceID)
 	if err != nil {
-		a.replyTopic(msg, "找不到 session 对应的 workspace。")
+		a.replyTopic(msg, "Could not find the workspace for this session.")
 		return
 	}
 	req := runner.StartRequest{
@@ -224,14 +245,14 @@ func (a *App) handleTopicMessage(ctx context.Context, msg *tgMessage) {
 		Model: a.resolveModel(sess, ws), Existing: true,
 	}
 	if err := a.runner.Steer(ctx, req, msg.Text); err != nil {
-		a.replyTopic(msg, "发送给 pi 失败："+err.Error())
+		a.replyTopic(msg, "Failed to send to pi: "+err.Error())
 	}
 }
 
 func (a *App) syncSessions(ctx context.Context, chatID int64) {
 	items, err := session.Scan(ctx, a.cfg.Runner.SessionDir)
 	if err != nil {
-		a.send(chatID, "同步失败："+err.Error(), nil)
+		a.send(chatID, "Sync failed: "+err.Error(), nil)
 		return
 	}
 	newWS, newSess := 0, 0
@@ -251,34 +272,63 @@ func (a *App) syncSessions(ctx context.Context, chatID int64) {
 			newSess++
 		}
 	}
-	a.send(chatID, fmt.Sprintf("同步完成：发现 %d 个新 workspace，%d 个 session", newWS, newSess), nil)
+	a.send(chatID, fmt.Sprintf("Sync complete: found %d new workspaces and %d sessions.", newWS, newSess), nil)
 }
 
-func (a *App) sendWorkspaces(ctx context.Context, chatID int64, text, prefix string) {
-	workspaces, err := a.store.ListWorkspaces(ctx)
+func (a *App) sendWorkspaces(ctx context.Context, chatID int64, text, prefix string, page int) {
+	a.postWorkspaces(ctx, chatID, 0, text, prefix, page)
+}
+
+func (a *App) editWorkspaces(ctx context.Context, chatID int64, messageID int, text, prefix string, page int) {
+	a.postWorkspaces(ctx, chatID, messageID, text, prefix, page)
+}
+
+func (a *App) postWorkspaces(ctx context.Context, chatID int64, messageID int, text, prefix string, page int) {
+	total, err := a.store.CountWorkspaces(ctx)
 	if err != nil {
-		a.send(chatID, "读取 workspace 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to read workspaces: "+err.Error(), nil)
 		return
 	}
-	if len(workspaces) == 0 {
-		a.send(chatID, "还没有 workspace。请先运行 /sync。", nil)
+	if total == 0 {
+		a.send(chatID, "No workspaces yet. Run /sync first.", nil)
+		return
+	}
+	page = clampPage(page, total, workspacePageSize)
+	workspaces, err := a.store.ListWorkspaces(ctx, workspacePageSize, page*workspacePageSize)
+	if err != nil {
+		a.send(chatID, "Failed to read workspaces: "+err.Error(), nil)
 		return
 	}
 	var rows [][]inlineKeyboardButton
-	for _, ws := range workspaces {
-		label := ws.Name
-		if label == "" {
-			label = filepath.Base(ws.Path)
+	for i := 0; i < len(workspaces); i += 2 {
+		var buttons []inlineKeyboardButton
+		for _, ws := range workspaces[i:min(i+2, len(workspaces))] {
+			buttons = append(buttons, inlineKeyboardButton{Text: workspaceLabel(ws), CallbackData: prefix + strconv.FormatInt(ws.ID, 10)})
 		}
-		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: label, CallbackData: prefix + strconv.FormatInt(ws.ID, 10)}))
+		rows = append(rows, buttons)
 	}
-	a.send(chatID, text, inlineKeyboardMarkup{InlineKeyboard: rows})
+	rows = appendPageNav(rows, page, total, workspacePageSize, workspacePagePrefix(prefix))
+	a.sendOrEdit(chatID, messageID, text, inlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
-func (a *App) sendSessions(ctx context.Context, chatID int64, workspaceID int64) {
-	sessions, err := a.store.ListSessions(ctx, workspaceID)
+func (a *App) sendSessions(ctx context.Context, chatID int64, workspaceID int64, page int) {
+	a.postSessions(ctx, chatID, 0, workspaceID, page)
+}
+
+func (a *App) editSessions(ctx context.Context, chatID int64, messageID int, workspaceID int64, page int) {
+	a.postSessions(ctx, chatID, messageID, workspaceID, page)
+}
+
+func (a *App) postSessions(ctx context.Context, chatID int64, messageID int, workspaceID int64, page int) {
+	total, err := a.store.CountSessions(ctx, workspaceID)
 	if err != nil {
-		a.send(chatID, "读取 sessions 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to read sessions: "+err.Error(), nil)
+		return
+	}
+	page = clampPage(page, total, sessionPageSize)
+	sessions, err := a.store.ListSessions(ctx, workspaceID, sessionPageSize, page*sessionPageSize)
+	if err != nil {
+		a.send(chatID, "Failed to read sessions: "+err.Error(), nil)
 		return
 	}
 	var rows [][]inlineKeyboardButton
@@ -286,19 +336,63 @@ func (a *App) sendSessions(ctx context.Context, chatID int64, workspaceID int64)
 	for _, sess := range sessions {
 		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: displaySession(sess), CallbackData: "s:" + sess.ID}))
 	}
-	a.send(chatID, "选择 session：", inlineKeyboardMarkup{InlineKeyboard: rows})
+	rows = appendPageNav(rows, page, total, sessionPageSize, "sp:"+strconv.FormatInt(workspaceID, 10)+":")
+	a.sendOrEdit(chatID, messageID, "Choose a session:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func workspaceLabel(ws store.Workspace) string {
+	label := ws.Name
+	if label == "" {
+		label = filepath.Base(ws.Path)
+	}
+	if len([]rune(label)) > 24 {
+		label = string([]rune(label)[:24])
+	}
+	return label
+}
+
+func appendPageNav(rows [][]inlineKeyboardButton, page, total, pageSize int, prefix string) [][]inlineKeyboardButton {
+	if total <= pageSize {
+		return rows
+	}
+	var nav []inlineKeyboardButton
+	if page > 0 {
+		nav = append(nav, inlineKeyboardButton{Text: "< Prev", CallbackData: prefix + strconv.Itoa(page-1)})
+	}
+	if (page+1)*pageSize < total {
+		nav = append(nav, inlineKeyboardButton{Text: "Next >", CallbackData: prefix + strconv.Itoa(page+1)})
+	}
+	return append(rows, nav)
+}
+
+func clampPage(page, total, pageSize int) int {
+	if page < 0 {
+		return 0
+	}
+	pages := (total + pageSize - 1) / pageSize
+	if pages == 0 || page < pages {
+		return page
+	}
+	return pages - 1
+}
+
+func workspacePagePrefix(prefix string) string {
+	if prefix == "newws:" {
+		return "newwsp:"
+	}
+	return "wp:"
 }
 
 func (a *App) startNewTask(ctx context.Context, chatID, userID int64, workspaceID int64, prompt string) {
 	ws, err := a.store.GetWorkspace(ctx, workspaceID)
 	if err != nil {
-		a.send(chatID, "读取 workspace 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
 	title := topicTitle(prompt)
 	topicID, err := a.createForumTopic(title)
 	if err != nil {
-		a.send(chatID, "创建 Topic 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to create topic: "+err.Error(), nil)
 		return
 	}
 	goalID, err := a.sendTopicMessage(topicID, "🎯 "+prompt, taskKeyboard(workspaceID, a.pinned(userID) == ws.Path))
@@ -307,33 +401,33 @@ func (a *App) startNewTask(ctx context.Context, chatID, userID int64, workspaceI
 	}
 	sess, err := a.store.CreatePlaceholderSession(ctx, workspaceID, title)
 	if err != nil {
-		a.send(chatID, "创建 session 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to create session: "+err.Error(), nil)
 		return
 	}
 	_ = a.store.SetSessionTopic(ctx, sess.ID, topicID, goalID)
 	req := runner.StartRequest{SessionID: sess.ID, Title: title, Workspace: ws.Path, TopicID: topicID, Model: a.resolveModel(sess, ws)}
 	if err := a.runner.Prompt(ctx, req, prompt); err != nil {
-		a.send(chatID, "启动 pi 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
-	a.send(chatID, fmt.Sprintf("已创建 Topic：%s", title), nil)
+	a.send(chatID, fmt.Sprintf("Created topic: %s", title), nil)
 }
 
 func (a *App) resumeSession(ctx context.Context, chatID int64, sessionID, prompt string) {
 	sess, err := a.store.GetSession(ctx, sessionID)
 	if err != nil {
-		a.send(chatID, "读取 session 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to read session: "+err.Error(), nil)
 		return
 	}
 	ws, err := a.store.GetWorkspace(ctx, sess.WorkspaceID)
 	if err != nil {
-		a.send(chatID, "读取 workspace 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
 	if sess.TopicID == 0 {
 		topicID, err := a.createForumTopic(topicTitle(prompt))
 		if err != nil {
-			a.send(chatID, "创建 Topic 失败："+err.Error(), nil)
+			a.send(chatID, "Failed to create topic: "+err.Error(), nil)
 			return
 		}
 		goalID, _ := a.sendTopicMessage(topicID, "🎯 "+prompt, taskKeyboard(ws.ID, false))
@@ -343,10 +437,10 @@ func (a *App) resumeSession(ctx context.Context, chatID int64, sessionID, prompt
 	}
 	req := runner.StartRequest{SessionID: sess.ID, Title: displaySession(sess), Workspace: ws.Path, TopicID: sess.TopicID, Model: a.resolveModel(sess, ws), Existing: true}
 	if err := a.runner.Prompt(ctx, req, prompt); err != nil {
-		a.send(chatID, "启动 pi 失败："+err.Error(), nil)
+		a.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
-	a.send(chatID, "已发送到 session。", nil)
+	a.send(chatID, "Sent to session.", nil)
 }
 
 func (a *App) ensureWorkspace(ctx context.Context, path string) (store.Workspace, error) {
@@ -386,6 +480,16 @@ func (a *App) send(chatID int64, text string, replyMarkup any) {
 	}
 }
 
+func (a *App) sendOrEdit(chatID int64, messageID int, text string, replyMarkup any) {
+	if messageID == 0 {
+		a.send(chatID, text, replyMarkup)
+		return
+	}
+	if err := a.editMessageText(chatID, messageID, text, replyMarkup); err != nil {
+		a.log.Warn("telegram edit failed", "error", err)
+	}
+}
+
 func (a *App) replyTopic(msg *tgMessage, text string) {
 	_, _ = a.sendMessage(msg.Chat.ID, msg.MessageThreadID, text, nil)
 }
@@ -393,6 +497,27 @@ func (a *App) replyTopic(msg *tgMessage, text string) {
 func (a *App) answerCallback(id, text string) {
 	var resp telegramOK
 	_ = a.callTelegram("answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, &resp)
+}
+
+func (a *App) registerCommands(ctx context.Context) error {
+	var resp telegramOK
+	err := a.callTelegramCtx(ctx, "setMyCommands", map[string]any{
+		"commands": []botCommand{
+			{Command: "start", Description: "Show help"},
+			{Command: "workspace", Description: "Choose a workspace and session"},
+			{Command: "new", Description: "Start a new task"},
+			{Command: "sync", Description: "Import historical sessions"},
+			{Command: "unpin", Description: "Clear the pinned workspace"},
+			{Command: "model", Description: "Configure model settings"},
+		},
+	}, &resp, 20*time.Second)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return errors.New(resp.Description)
+	}
+	return nil
 }
 
 func (a *App) createForumTopic(name string) (int, error) {
@@ -438,6 +563,21 @@ func (a *App) sendMessage(chatID int64, topicID int, text string, replyMarkup an
 		return 0, errors.New(resp.Description)
 	}
 	return resp.Result.MessageID, nil
+}
+
+func (a *App) editMessageText(chatID int64, messageID int, text string, replyMarkup any) error {
+	var resp telegramOK
+	payload := map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+	if err := a.callTelegram("editMessageText", payload, &resp); err != nil {
+		return err
+	}
+	if !resp.OK {
+		return errors.New(resp.Description)
+	}
+	return nil
 }
 
 func (a *App) pinChatMessage(messageID int) error {
@@ -626,6 +766,11 @@ func (m *tgMessage) CommandArguments() string {
 
 type telegramOK struct {
 	OK          bool   `json:"ok"`
+	Description string `json:"description"`
+}
+
+type botCommand struct {
+	Command     string `json:"command"`
 	Description string `json:"description"`
 }
 

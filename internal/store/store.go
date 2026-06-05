@@ -104,8 +104,8 @@ func (s *Store) GetWorkspaceByPath(ctx context.Context, path string) (Workspace,
 	return scanWorkspace(row)
 }
 
-func (s *Store) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, path, COALESCE(name,''), COALESCE(model,''), created_at FROM workspaces ORDER BY path`)
+func (s *Store) ListWorkspaces(ctx context.Context, limit, offset int) ([]Workspace, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, path, COALESCE(name,''), COALESCE(model,''), created_at FROM workspaces ORDER BY path LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +119,12 @@ func (s *Store) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 		out = append(out, ws)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) CountWorkspaces(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspaces`).Scan(&count)
+	return count, err
 }
 
 func (s *Store) UpsertSession(ctx context.Context, sess Session) (bool, error) {
@@ -146,8 +152,8 @@ func (s *Store) CreatePlaceholderSession(ctx context.Context, workspaceID int64,
 	return sess, err
 }
 
-func (s *Store) ListSessions(ctx context.Context, workspaceID int64) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, workspace_id, file_path, COALESCE(name,''), COALESCE(title,''), COALESCE(model,''), COALESCE(topic_id,0), COALESCE(goal_message_id,0), created_at, updated_at FROM sessions WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 40`, workspaceID)
+func (s *Store) ListSessions(ctx context.Context, workspaceID int64, limit, offset int) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, workspace_id, file_path, COALESCE(name,''), COALESCE(title,''), COALESCE(model,''), COALESCE(topic_id,0), COALESCE(goal_message_id,0), created_at, updated_at FROM sessions WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`, workspaceID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +167,12 @@ func (s *Store) ListSessions(ctx context.Context, workspaceID int64) ([]Session,
 		out = append(out, sess)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) CountSessions(ctx context.Context, workspaceID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE workspace_id = ?`, workspaceID).Scan(&count)
+	return count, err
 }
 
 func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
