@@ -68,18 +68,20 @@ func readSessionFile(path string) (Discovered, bool) {
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
 		}
+		if ts, ok := parseTimestamp(raw["timestamp"]); ok {
+			if found.CreatedAt.IsZero() || ts.Before(found.CreatedAt) {
+				found.CreatedAt = ts
+			}
+			if found.UpdatedAt.IsZero() || ts.After(found.UpdatedAt) {
+				found.UpdatedAt = ts
+			}
+		}
 		if raw["type"] == "session" {
 			if cwd, _ := raw["cwd"].(string); cwd != "" {
 				found.WorkspacePath = cwd
 			}
 			if id, _ := raw["id"].(string); id != "" {
 				found.SessionID = id
-			}
-			if ts, _ := raw["timestamp"].(string); ts != "" {
-				if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-					found.CreatedAt = t
-					found.UpdatedAt = t
-				}
 			}
 			continue
 		}
@@ -95,13 +97,30 @@ func readSessionFile(path string) (Discovered, bool) {
 	if found.Title == "" {
 		found.Title = filepath.Base(path)
 	}
-	if found.CreatedAt.IsZero() {
-		if st, err := os.Stat(path); err == nil {
+	if st, err := os.Stat(path); err == nil {
+		if found.CreatedAt.IsZero() {
 			found.CreatedAt = st.ModTime()
+		}
+		if found.UpdatedAt.IsZero() {
 			found.UpdatedAt = st.ModTime()
 		}
 	}
+	if found.UpdatedAt.IsZero() {
+		found.UpdatedAt = found.CreatedAt
+	}
 	return found, true
+}
+
+func parseTimestamp(raw any) (time.Time, bool) {
+	ts, _ := raw.(string)
+	if ts == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 func firstUserLine(raw map[string]any) string {
