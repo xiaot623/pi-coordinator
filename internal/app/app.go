@@ -26,7 +26,7 @@ type App struct {
 	paths  config.Paths
 	log    *slog.Logger
 	store  *store.Store
-	runner *runner.Manager
+	runner runner.Runner
 
 	mu      sync.Mutex
 	pins    map[int64]string
@@ -50,11 +50,9 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 	if err != nil {
 		return nil, err
 	}
-	rm := runner.NewManager(runner.Options{
+	rm := runner.NewLocal(runner.LocalOptions{
 		Binary:      cfg.Runner.Binary,
 		SessionDir:  cfg.Runner.SessionDir,
-		BotToken:    cfg.Telegram.BotToken,
-		GroupChatID: cfg.Telegram.GroupChatID,
 		IdleTimeout: cfg.Runner.IdleTimeout.Duration,
 		Logger:      logger,
 	})
