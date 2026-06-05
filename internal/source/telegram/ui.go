@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/store"
@@ -168,15 +169,21 @@ func displaySession(sess store.Session) string {
 }
 
 func topicTitle(prompt string) string {
+	return topicTitleWithDate(prompt, time.Now())
+}
+
+func topicTitleWithDate(prompt string, now time.Time) string {
 	line := strings.TrimSpace(strings.Split(prompt, "\n")[0])
 	if line == "" {
 		line = "New task"
 	}
+	suffix := " " + now.Format("20060102")
 	runes := []rune(line)
-	if len(runes) > 128 {
-		return string(runes[:128])
+	maxTitleRunes := 128 - len([]rune(suffix))
+	if len(runes) > maxTitleRunes {
+		line = string(runes[:maxTitleRunes])
 	}
-	return line
+	return line + suffix
 }
 
 func taskKeyboard(workspaceID int64, pinned bool) inlineKeyboardMarkup {
