@@ -15,6 +15,7 @@ import (
 const (
 	workspacePageSize = 10
 	sessionPageSize   = 8
+	pinnedOnPrefix    = "Pinned on "
 )
 
 // -- UI Formatting --
@@ -152,6 +153,23 @@ func workspaceLabel(ws store.Workspace) string {
 		label = string([]rune(label)[:24])
 	}
 	return label
+}
+
+func sendPinnedWorkspaceMessage(b *Bot, userID, chatID int64, topicID int, ws store.Workspace) {
+	messageID, err := b.sendMessage(chatID, topicID, pinnedOnPrefix+ws.Path, nil)
+	if err != nil {
+		b.app.Logger().Warn("telegram send pin message failed", "error", err)
+		return
+	}
+	if err := b.pinChatMessage(chatID, messageID); err != nil {
+		b.app.Logger().Warn("telegram pin message failed", "error", err)
+		return
+	}
+	b.trackPinMessage(userID, chatID, messageID)
+}
+
+func isPinnedWorkspaceText(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), pinnedOnPrefix)
 }
 
 func displaySession(sess store.Session) string {
@@ -485,6 +503,9 @@ func clampPage(page, total, pageSize int) int {
 func workspacePagePrefix(prefix string) string {
 	if prefix == "newws:" {
 		return "newwsp:"
+	}
+	if prefix == "pinws:" {
+		return "pinwsp:"
 	}
 	if prefix == "mws:" {
 		return "mwp:"

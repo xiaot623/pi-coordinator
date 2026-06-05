@@ -18,9 +18,15 @@ type Bot struct {
 	app    *app.App
 	router *Router
 
-	mu      sync.Mutex
-	pins    map[int64]string
-	pending map[int64]PendingState
+	mu          sync.Mutex
+	pins        map[int64]string
+	pinMessages map[int64][]PinMessage
+	pending     map[int64]PendingState
+}
+
+type PinMessage struct {
+	ChatID    int64
+	MessageID int
 }
 
 type PendingState struct {
@@ -37,9 +43,10 @@ type PendingState struct {
 
 func NewBot(a *app.App) *Bot {
 	b := &Bot{
-		app:     a,
-		pins:    make(map[int64]string),
-		pending: make(map[int64]PendingState),
+		app:         a,
+		pins:        make(map[int64]string),
+		pinMessages: make(map[int64][]PinMessage),
+		pending:     make(map[int64]PendingState),
 	}
 	b.router = NewRouter(b)
 	b.registerHandlers()
@@ -48,6 +55,8 @@ func NewBot(a *app.App) *Bot {
 
 func (b *Bot) Run(ctx context.Context) error {
 	b.app.Logger().Info("telegram bot started")
+
+	b.cleanupStalePinnedWorkspaceMessages()
 
 	if err := b.registerCommands(ctx); err != nil {
 		b.app.Logger().Warn("register telegram commands failed", "error", err)
@@ -135,6 +144,55 @@ func (b *Bot) clearPin(userID int64) {
 	delete(b.pins, userID)
 }
 
+func (b *Bot) trackPinMessage(userID, chatID int64, messageID int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pinMessages[userID] = append(b.pinMessages[userID], PinMessage{ChatID: chatID, MessageID: messageID})
+}
+
+func (b *Bot) trackedPinMessages(userID int64) []PinMessage {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	messages := b.pinMessages[userID]
+	return append([]PinMessage(nil), messages...)
+}
+
+func (b *Bot) clearTrackedPinMessages(userID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.pinMessages, userID)
+}
+
+func (b *Bot) trackedPinUsers() []int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	users := make([]int64, 0, len(b.pinMessages))
+	for userID := range b.pinMessages {
+		users = append(users, userID)
+	}
+	return users
+}
+
+func (b *Bot) clearUserPin(ctx context.Context, userID int64) {
+	b.clearPin(userID)
+	b.unpinTrackedMessages(ctx, userID)
+}
+
+func (b *Bot) CleanupPins(ctx context.Context) {
+	for _, userID := range b.trackedPinUsers() {
+		b.clearUserPin(ctx, userID)
+	}
+}
+
+func (b *Bot) unpinTrackedMessages(ctx context.Context, userID int64) {
+	for _, message := range b.trackedPinMessages(userID) {
+		if err := b.unpinChatMessage(ctx, message.ChatID, message.MessageID); err != nil {
+			b.app.Logger().Warn("telegram unpin message failed", "chat_id", message.ChatID, "message_id", message.MessageID, "error", err)
+		}
+	}
+	b.clearTrackedPinMessages(userID)
+}
+
 // -- Telegram API Helpers --
 
 func (b *Bot) callTelegramCtx(ctx context.Context, method string, payload map[string]any, out any, timeout time.Duration) error {
@@ -190,6 +248,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{"command": "workspace", "description": "Choose a workspace and session"},
 			{"command": "new", "description": "Start a new task"},
 			{"command": "sync", "description": "Import historical sessions"},
+			{"command": "pin", "description": "Pin a workspace"},
 			{"command": "unpin", "description": "Clear the pinned workspace"},
 			{"command": "model", "description": "Configure model settings"},
 		},
@@ -243,6 +302,21 @@ func (b *Bot) sendMessage(chatID int64, topicID int, text string, replyMarkup an
 	return resp.Result.MessageID, nil
 }
 
+func (b *Bot) getChat(ctx context.Context, chatID int64) (*Chat, error) {
+	var resp struct {
+		OK          bool   `json:"ok"`
+		Result      Chat   `json:"result"`
+		Description string `json:"description"`
+	}
+	if err := b.callTelegramCtx(ctx, "getChat", map[string]any{"chat_id": chatID}, &resp, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, errors.New(resp.Description)
+	}
+	return &resp.Result, nil
+}
+
 func (b *Bot) editMessageText(chatID int64, messageID int, text string, replyMarkup any) error {
 	var resp telegramOK
 	payload := map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}
@@ -279,10 +353,10 @@ func (b *Bot) sendTopicMessage(topicID int, text string, replyMarkup any) (int, 
 	return b.sendMessage(b.app.Config().Telegram.GroupChatID, topicID, text, replyMarkup)
 }
 
-func (b *Bot) pinChatMessage(messageID int) error {
+func (b *Bot) pinChatMessage(chatID int64, messageID int) error {
 	var resp telegramOK
 	err := b.callTelegram("pinChatMessage", map[string]any{
-		"chat_id": b.app.Config().Telegram.GroupChatID, "message_id": messageID, "disable_notification": true,
+		"chat_id": chatID, "message_id": messageID, "disable_notification": true,
 	}, &resp)
 	if err != nil {
 		return err
@@ -291,6 +365,50 @@ func (b *Bot) pinChatMessage(messageID int) error {
 		return errors.New(resp.Description)
 	}
 	return nil
+}
+
+func (b *Bot) unpinChatMessage(ctx context.Context, chatID int64, messageID int) error {
+	var resp telegramOK
+	err := b.callTelegramCtx(ctx, "unpinChatMessage", map[string]any{
+		"chat_id": chatID, "message_id": messageID,
+	}, &resp, 20*time.Second)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return errors.New(resp.Description)
+	}
+	return nil
+}
+
+func (b *Bot) cleanupStalePinnedWorkspaceMessages() {
+	b.cleanupStalePinnedWorkspaceMessagesInChat(b.app.Config().Telegram.GroupChatID, true)
+	for _, chatID := range b.app.Config().Telegram.AllowedUsers {
+		b.cleanupStalePinnedWorkspaceMessagesInChat(chatID, false)
+	}
+}
+
+func (b *Bot) cleanupStalePinnedWorkspaceMessagesInChat(chatID int64, warnOnFailure bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for range 10 {
+		chat, err := b.getChat(ctx, chatID)
+		if err != nil {
+			if warnOnFailure {
+				b.app.Logger().Warn("telegram stale pin check failed", "chat_id", chatID, "error", err)
+			} else {
+				b.app.Logger().Debug("telegram stale pin check skipped", "chat_id", chatID, "error", err)
+			}
+			return
+		}
+		if chat.PinnedMessage == nil || !isPinnedWorkspaceText(chat.PinnedMessage.Text) {
+			return
+		}
+		if err := b.unpinChatMessage(ctx, chatID, chat.PinnedMessage.MessageID); err != nil {
+			b.app.Logger().Warn("telegram stale pin cleanup failed", "chat_id", chatID, "message_id", chat.PinnedMessage.MessageID, "error", err)
+			return
+		}
+	}
 }
 
 func (b *Bot) answerCallback(id, text string) {
@@ -328,8 +446,9 @@ type User struct {
 }
 
 type Chat struct {
-	ID   int64  `json:"id"`
-	Type string `json:"type"`
+	ID            int64    `json:"id"`
+	Type          string   `json:"type"`
+	PinnedMessage *Message `json:"pinned_message"`
 }
 
 func (c Chat) IsPrivate() bool {

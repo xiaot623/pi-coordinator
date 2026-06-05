@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/app"
 	"github.com/xiaot/pi-coordinator/internal/config"
@@ -41,6 +42,11 @@ func main() {
 	go watchConfig(ctx, a, paths.ConfigPath, logger)
 
 	bot := telegram.NewBot(a)
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		bot.CleanupPins(cleanupCtx)
+	}()
 	if err := bot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("run bot", "error", err)
 		os.Exit(1)

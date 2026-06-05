@@ -3,10 +3,12 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/xiaot/pi-coordinator/internal/runner"
+	"github.com/xiaot/pi-coordinator/internal/store"
 )
 
 // registerHandlers sets up all routes for the Telegram bot.
@@ -16,6 +18,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("sync", handleSync)
 	b.router.Command("workspace", handleWorkspaceCmd)
 	b.router.Command("new", handleNewCmd)
+	b.router.Command("pin", handlePinCmd)
 	b.router.Command("unpin", handleUnpin)
 	b.router.Command("model", handleModelCmd)
 
@@ -39,8 +42,10 @@ func (b *Bot) registerHandlers() {
 
 	b.router.Callback("wp:", handleWorkspacePage)
 	b.router.Callback("newwsp:", handleNewWorkspacePage)
+	b.router.Callback("pinwsp:", handlePinWorkspacePage)
 	b.router.Callback("w:", handleChooseWorkspaceForSession)
 	b.router.Callback("newws:", handleChooseWorkspaceForNewTask)
+	b.router.Callback("pinws:", handleChooseWorkspaceForPin)
 
 	b.router.Callback("ns:", handleNewSessionCallback)
 	b.router.Callback("s:", handleSessionCallback)
@@ -89,8 +94,23 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 	sendWorkspaces(ctx, b, update.Message.Chat.ID, 0, "Choose a workspace:", "newws:", 0)
 }
 
+func handlePinCmd(ctx context.Context, b *Bot, update Update) {
+	b.clearPending(update.Message.From.ID)
+	args := strings.TrimSpace(update.Message.CommandArguments())
+	if args == "" {
+		sendWorkspaces(ctx, b, update.Message.Chat.ID, 0, "Choose a workspace to pin:", "pinws:", 0)
+		return
+	}
+	ws, err := findWorkspaceForPin(ctx, b, args)
+	if err != nil {
+		b.send(update.Message.Chat.ID, "Pin failed: "+err.Error(), nil)
+		return
+	}
+	pinWorkspace(ctx, b, update.Message.From.ID, update.Message.Chat.ID, update.Message.MessageThreadID, ws)
+}
+
 func handleUnpin(ctx context.Context, b *Bot, update Update) {
-	b.clearPin(update.Message.From.ID)
+	b.clearUserPin(ctx, update.Message.From.ID)
 	b.send(update.Message.Chat.ID, "Workspace pin cleared.", nil)
 }
 
@@ -385,6 +405,12 @@ func handleNewWorkspacePage(ctx context.Context, b *Bot, update Update) {
 	sendWorkspaces(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "Choose a workspace:", "newws:", page)
 }
 
+func handlePinWorkspacePage(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	page, _ := strconv.Atoi(strings.TrimPrefix(q.Data, "pinwsp:"))
+	sendWorkspaces(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "Choose a workspace to pin:", "pinws:", page)
+}
+
 func handleChooseWorkspaceForSession(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "w:"), 10, 64)
@@ -401,6 +427,17 @@ func handleChooseWorkspaceForNewTask(ctx context.Context, b *Bot, update Update)
 		return
 	}
 	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
+}
+
+func handleChooseWorkspaceForPin(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "pinws:"), 10, 64)
+	ws, err := b.app.Store().GetWorkspace(ctx, id)
+	if err != nil {
+		b.send(q.Message.Chat.ID, "Pin failed: "+err.Error(), nil)
+		return
+	}
+	pinWorkspace(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageThreadID, ws)
 }
 
 func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {
@@ -446,12 +483,54 @@ func handlePinCallback(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	if b.pinned(q.From.ID) == ws.Path {
-		b.clearPin(q.From.ID)
-		b.send(q.Message.Chat.ID, fmt.Sprintf("📣 Workspace unpinned for user %d\nDirectory: %s", q.From.ID, ws.Path), nil)
+		b.clearUserPin(ctx, q.From.ID)
+		b.send(q.Message.Chat.ID, "Workspace pin cleared.", nil)
 		return
 	}
-	b.setPin(q.From.ID, ws.Path)
-	b.send(q.Message.Chat.ID, fmt.Sprintf("📣 Workspace pinned for user %d\nDirectory: %s\nNew messages from this user in General Topic or private chat will create sessions here.\nUse /unpin or /workspace to change it.", q.From.ID, ws.Path), nil)
+	pinWorkspace(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageThreadID, ws)
+}
+
+func pinWorkspace(ctx context.Context, b *Bot, userID, chatID int64, topicID int, ws store.Workspace) {
+	b.unpinTrackedMessages(ctx, userID)
+	b.setPin(userID, ws.Path)
+	sendPinnedWorkspaceMessage(b, userID, chatID, topicID, ws)
+}
+
+func findWorkspaceForPin(ctx context.Context, b *Bot, query string) (store.Workspace, error) {
+	if id, err := strconv.ParseInt(query, 10, 64); err == nil {
+		if ws, err := b.app.Store().GetWorkspace(ctx, id); err == nil {
+			return ws, nil
+		}
+	}
+	if ws, err := b.app.Store().GetWorkspaceByPath(ctx, query); err == nil {
+		return ws, nil
+	}
+	total, err := b.app.Store().CountWorkspaces(ctx)
+	if err != nil {
+		return store.Workspace{}, err
+	}
+	workspaces, err := b.app.Store().ListWorkspaces(ctx, total, 0)
+	if err != nil {
+		return store.Workspace{}, err
+	}
+	rawQuery := query
+	query = strings.ToLower(rawQuery)
+	var matches []store.Workspace
+	for _, ws := range workspaces {
+		name := strings.ToLower(ws.Name)
+		base := strings.ToLower(filepath.Base(ws.Path))
+		path := strings.ToLower(ws.Path)
+		if query == name || query == base || strings.HasSuffix(path, query) {
+			matches = append(matches, ws)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return store.Workspace{}, fmt.Errorf("multiple workspaces match %q; use /pin <workspace id>", rawQuery)
+	}
+	return store.Workspace{}, fmt.Errorf("workspace %q not found", rawQuery)
 }
 
 // -- Action Implementations --
@@ -472,7 +551,7 @@ func startNewTask(ctx context.Context, b *Bot, chatID, userID int64, workspaceID
 
 	goalID, err := b.sendTopicMessage(topicID, "🎯 "+prompt, nil)
 	if err == nil {
-		_ = b.pinChatMessage(goalID)
+		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
 	}
 
 	sess, err := b.app.Store().CreatePlaceholderSession(ctx, workspaceID, title)
@@ -517,7 +596,7 @@ func resumeSession(ctx context.Context, b *Bot, chatID, userID int64, sessionID,
 			return
 		}
 		goalID, _ := b.sendTopicMessage(topicID, "🎯 "+prompt, nil)
-		_ = b.pinChatMessage(goalID)
+		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
 		_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
 		sess.TopicID = topicID
 	}
