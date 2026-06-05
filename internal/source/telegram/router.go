@@ -15,6 +15,8 @@ type Router struct {
 	topicHandler     HandlerFunc            // Handler for topic messages in the group
 }
 
+const generalTopicThreadID = 1
+
 func NewRouter(bot *Bot) *Router {
 	return &Router{
 		bot:              bot,
@@ -43,6 +45,16 @@ func (r *Router) Topic(handler HandlerFunc) {
 	r.topicHandler = handler
 }
 
+func (r *Router) handleCommand(ctx context.Context, update Update) {
+	msg := update.Message
+	cmd := msg.Command()
+	if handler, ok := r.commandHandlers[cmd]; ok {
+		handler(ctx, r.bot, update)
+	} else {
+		r.bot.send(msg.Chat.ID, "Unknown command. Available: /workspace /new /sync /unpin /model", nil)
+	}
+}
+
 // HandleUpdate routes the incoming update to the appropriate handler.
 func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 	if update.CallbackQuery != nil {
@@ -50,12 +62,12 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 			return
 		}
 		r.bot.answerCallback(update.CallbackQuery.ID, "")
-		
+
 		data := update.CallbackQuery.Data
 		// Find longest matching prefix
 		var bestMatch string
 		var bestHandler HandlerFunc
-		
+
 		for prefix, handler := range r.callbackHandlers {
 			if strings.HasPrefix(data, prefix) {
 				if len(prefix) > len(bestMatch) {
@@ -64,7 +76,7 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 				}
 			}
 		}
-		
+
 		if bestHandler != nil {
 			bestHandler(ctx, r.bot, update)
 		}
@@ -81,12 +93,7 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 
 	if msg.Chat.IsPrivate() {
 		if msg.IsCommand() {
-			cmd := msg.Command()
-			if handler, ok := r.commandHandlers[cmd]; ok {
-				handler(ctx, r.bot, update)
-			} else {
-				r.bot.send(msg.Chat.ID, "Unknown command. Available: /workspace /new /sync /unpin /model", nil)
-			}
+			r.handleCommand(ctx, update)
 			return
 		}
 		if r.textHandler != nil && strings.TrimSpace(msg.Text) != "" {
@@ -95,8 +102,31 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 		return
 	}
 
-	// Topic message in group chat
-	if msg.Chat.ID == r.bot.app.Config().Telegram.GroupChatID && msg.MessageThreadID != 0 && strings.TrimSpace(msg.Text) != "" {
+	if msg.Chat.ID != r.bot.app.Config().Telegram.GroupChatID || strings.TrimSpace(msg.Text) == "" {
+		return
+	}
+
+	if msg.IsCommand() && (msg.MessageThreadID == 0 || msg.MessageThreadID == generalTopicThreadID) {
+		r.handleCommand(ctx, update)
+		return
+	}
+
+	if msg.MessageThreadID == 0 || msg.MessageThreadID == generalTopicThreadID {
+		if r.textHandler == nil {
+			return
+		}
+		if r.bot.pinned(msg.From.ID) != "" {
+			r.textHandler(ctx, r.bot, update)
+			return
+		}
+		if msg.ReplyToMessage != nil && r.bot.hasPendingPromptReply(msg.From.ID, msg.Chat.ID, msg.ReplyToMessage.MessageID) {
+			r.textHandler(ctx, r.bot, update)
+		}
+		return
+	}
+
+	// Session topic message in the configured group chat.
+	if msg.MessageThreadID != 0 {
 		if r.topicHandler != nil {
 			r.topicHandler(ctx, r.bot, update)
 		}

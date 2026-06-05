@@ -24,13 +24,15 @@ type Bot struct {
 }
 
 type PendingState struct {
-	Kind        string
-	WorkspaceID int64
-	SessionID   string
-	Prompt      string
-	ModelScope  string
-	ModelID     string
-	Provider    string
+	Kind            string
+	WorkspaceID     int64
+	SessionID       string
+	Prompt          string
+	PromptChatID    int64
+	PromptMessageID int
+	ModelScope      string
+	ModelID         string
+	Provider        string
 }
 
 func NewBot(a *app.App) *Bot {
@@ -46,11 +48,11 @@ func NewBot(a *app.App) *Bot {
 
 func (b *Bot) Run(ctx context.Context) error {
 	b.app.Logger().Info("telegram bot started")
-	
+
 	if err := b.registerCommands(ctx); err != nil {
 		b.app.Logger().Warn("register telegram commands failed", "error", err)
 	}
-	
+
 	offset := 0
 	for {
 		updates, err := b.getUpdates(ctx, offset)
@@ -102,6 +104,17 @@ func (b *Bot) clearPending(userID int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.pending, userID)
+}
+
+func (b *Bot) hasPendingPromptReply(userID, chatID int64, replyToMessageID int) bool {
+	if replyToMessageID == 0 {
+		return false
+	}
+	p, ok := b.getPending(userID)
+	return ok &&
+		(p.Kind == "await_new_prompt" || p.Kind == "await_resume_prompt") &&
+		p.PromptChatID == chatID &&
+		p.PromptMessageID == replyToMessageID
 }
 
 func (b *Bot) pinned(userID int64) string {
@@ -301,11 +314,12 @@ type CallbackQuery struct {
 }
 
 type Message struct {
-	MessageID       int    `json:"message_id"`
-	MessageThreadID int    `json:"message_thread_id"`
-	From            *User  `json:"from"`
-	Chat            Chat   `json:"chat"`
-	Text            string `json:"text"`
+	MessageID       int      `json:"message_id"`
+	MessageThreadID int      `json:"message_thread_id"`
+	From            *User    `json:"from"`
+	Chat            Chat     `json:"chat"`
+	Text            string   `json:"text"`
+	ReplyToMessage  *Message `json:"reply_to_message"`
 }
 
 type User struct {

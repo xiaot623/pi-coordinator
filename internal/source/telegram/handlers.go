@@ -36,12 +36,12 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("msws:", handleChooseSessionWorkspace)
 	b.router.Callback("msp:", handleModelSessionPage)
 	b.router.Callback("msess:", handleApplySessionModel)
-	
+
 	b.router.Callback("wp:", handleWorkspacePage)
 	b.router.Callback("newwsp:", handleNewWorkspacePage)
 	b.router.Callback("w:", handleChooseWorkspaceForSession)
 	b.router.Callback("newws:", handleChooseWorkspaceForNewTask)
-	
+
 	b.router.Callback("ns:", handleNewSessionCallback)
 	b.router.Callback("s:", handleSessionCallback)
 	b.router.Callback("sp:", handleSessionPage)
@@ -72,6 +72,19 @@ func handleWorkspaceCmd(ctx context.Context, b *Bot, update Update) {
 
 func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 	prompt := strings.TrimSpace(update.Message.CommandArguments())
+	if path := b.pinned(update.Message.From.ID); path != "" {
+		ws, err := b.app.Store().GetWorkspaceByPath(ctx, path)
+		if err != nil {
+			b.send(update.Message.Chat.ID, "Pinned workspace is unavailable: "+err.Error(), nil)
+			return
+		}
+		if prompt != "" {
+			startNewTask(ctx, b, update.Message.Chat.ID, update.Message.From.ID, ws.ID, prompt)
+			return
+		}
+		promptForPinnedNewTask(b, update.Message.Chat, ws.Path)
+		return
+	}
 	b.setPending(update.Message.From.ID, PendingState{Kind: "new_prompt", Prompt: prompt})
 	sendWorkspaces(ctx, b, update.Message.Chat.ID, 0, "Choose a workspace:", "newws:", 0)
 }
@@ -118,7 +131,7 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 			return
 		}
 	}
-	
+
 	if path := b.pinned(userID); path != "" {
 		ws, err := b.app.Store().GetWorkspaceByPath(ctx, path)
 		if err != nil {
@@ -128,7 +141,36 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 		startNewTask(ctx, b, chatID, userID, ws.ID, text)
 		return
 	}
+	if !msg.Chat.IsPrivate() {
+		return
+	}
 	b.send(chatID, "Choose a workspace first with /new or /workspace.", nil)
+}
+
+func promptForPendingInput(b *Bot, chat Chat, userID int64, pending PendingState, text string) {
+	if !chat.IsPrivate() {
+		if b.pinned(userID) != "" {
+			text += "\n\nYou can send it as a normal message in General Topic."
+		} else {
+			text += "\n\nReply to this message with your content."
+		}
+	}
+	messageID, err := b.sendMessage(chat.ID, 0, text, nil)
+	if err != nil {
+		b.app.Logger().Warn("telegram send failed", "error", err)
+		return
+	}
+	pending.PromptChatID = chat.ID
+	pending.PromptMessageID = messageID
+	b.setPending(userID, pending)
+}
+
+func promptForPinnedNewTask(b *Bot, chat Chat, workspacePath string) {
+	text := "Send the task description.\nPinned workspace: " + workspacePath
+	if !chat.IsPrivate() {
+		text += "\n\nYou can send it as a normal message in General Topic."
+	}
+	b.send(chat.ID, text, nil)
 }
 
 func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
@@ -142,16 +184,16 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Could not find the workspace for this session.", nil)
 		return
 	}
-	
+
 	req := runner.StartRequest{
-		SessionID: sess.ID, 
-		Title:     displaySession(sess), 
-		Workspace: ws.Path, 
+		SessionID: sess.ID,
+		Title:     displaySession(sess),
+		Workspace: ws.Path,
 		TopicID:   sess.TopicID,
-		Model:     b.app.ResolveModel(sess, ws), 
+		Model:     b.app.ResolveModel(sess, ws),
 		Existing:  true,
 	}
-	
+
 	if err := b.app.Runner().Steer(ctx, req, msg.Text); err != nil {
 		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to send to pi: "+err.Error(), nil)
 	}
@@ -225,7 +267,7 @@ func handleChooseModel(ctx context.Context, b *Bot, update Update) {
 	model := models[index]
 	p.ModelID = model.Provider + "/" + model.ID
 	b.setPending(q.From.ID, p)
-	
+
 	switch p.ModelScope {
 	case "global":
 		if err := b.app.SetGlobalModel(p.ModelID); err != nil {
@@ -256,7 +298,7 @@ func handleModelSessionWorkspacePage(ctx context.Context, b *Bot, update Update)
 func handleApplyWorkspaceModel(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "mws:"), 10, 64)
-	
+
 	p, ok := b.getPending(q.From.ID)
 	if !ok || p.Kind != "model" || p.ModelScope != "workspace" || p.ModelID == "" {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Model selection expired. Send /model again.", nil)
@@ -278,7 +320,7 @@ func handleApplyWorkspaceModel(ctx context.Context, b *Bot, update Update) {
 func handleChooseSessionWorkspace(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	workspaceID, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "msws:"), 10, 64)
-	
+
 	p, ok := b.getPending(q.From.ID)
 	if !ok || p.Kind != "model" || p.ModelScope != "session" || p.ModelID == "" {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Model selection expired. Send /model again.", nil)
@@ -295,7 +337,7 @@ func handleModelSessionPage(ctx context.Context, b *Bot, update Update) {
 	if len(parts) == 2 {
 		id, _ := strconv.ParseInt(parts[0], 10, 64)
 		page, _ := strconv.Atoi(parts[1])
-		
+
 		p, ok := b.getPending(q.From.ID)
 		if !ok || p.Kind != "model" || p.ModelScope != "session" || p.ModelID == "" {
 			b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Model selection expired. Send /model again.", nil)
@@ -310,7 +352,7 @@ func handleModelSessionPage(ctx context.Context, b *Bot, update Update) {
 func handleApplySessionModel(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	sessionID := strings.TrimPrefix(q.Data, "msess:")
-	
+
 	p, ok := b.getPending(q.From.ID)
 	if !ok || p.Kind != "model" || p.ModelScope != "session" || p.ModelID == "" {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Model selection expired. Send /model again.", nil)
@@ -358,22 +400,19 @@ func handleChooseWorkspaceForNewTask(ctx context.Context, b *Bot, update Update)
 		startNewTask(ctx, b, q.Message.Chat.ID, q.From.ID, id, p.Prompt)
 		return
 	}
-	b.setPending(q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id})
-	b.send(q.Message.Chat.ID, "Send the task description.", nil)
+	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
 }
 
 func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "ns:"), 10, 64)
-	b.setPending(q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id})
-	b.send(q.Message.Chat.ID, "Send the task description.", nil)
+	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
 }
 
 func handleSessionCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	sid := strings.TrimPrefix(q.Data, "s:")
-	b.setPending(q.From.ID, PendingState{Kind: "await_resume_prompt", SessionID: sid})
-	b.send(q.Message.Chat.ID, "Send the message to continue this session.", nil)
+	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_resume_prompt", SessionID: sid}, "Send the message to continue this session.")
 }
 
 func handleSessionPage(ctx context.Context, b *Bot, update Update) {
@@ -395,8 +434,7 @@ func handleSessionsList(ctx context.Context, b *Bot, update Update) {
 func handleNewCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "new:"), 10, 64)
-	b.setPending(q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id})
-	b.send(q.Message.Chat.ID, "Send the task description.", nil)
+	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
 }
 
 func handlePinCallback(ctx context.Context, b *Bot, update Update) {
@@ -407,8 +445,13 @@ func handlePinCallback(ctx context.Context, b *Bot, update Update) {
 		b.send(q.Message.Chat.ID, "Pin failed: "+err.Error(), nil)
 		return
 	}
+	if b.pinned(q.From.ID) == ws.Path {
+		b.clearPin(q.From.ID)
+		b.send(q.Message.Chat.ID, fmt.Sprintf("📣 Workspace unpinned for user %d\nDirectory: %s", q.From.ID, ws.Path), nil)
+		return
+	}
 	b.setPin(q.From.ID, ws.Path)
-	b.send(q.Message.Chat.ID, fmt.Sprintf("📌 Workspace pinned: %s\nNew private messages will create tasks in this workspace.\nUse /unpin or /workspace to change it.", ws.Path), nil)
+	b.send(q.Message.Chat.ID, fmt.Sprintf("📣 Workspace pinned for user %d\nDirectory: %s\nNew messages from this user in General Topic or private chat will create sessions here.\nUse /unpin or /workspace to change it.", q.From.ID, ws.Path), nil)
 }
 
 // -- Action Implementations --
@@ -419,39 +462,39 @@ func startNewTask(ctx context.Context, b *Bot, chatID, userID int64, workspaceID
 		b.send(chatID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
-	
+
 	title := topicTitle(prompt)
 	topicID, err := b.createForumTopic(title)
 	if err != nil {
 		b.send(chatID, "Failed to create topic: "+err.Error(), nil)
 		return
 	}
-	
+
 	goalID, err := b.sendTopicMessage(topicID, "🎯 "+prompt, nil)
 	if err == nil {
 		_ = b.pinChatMessage(goalID)
 	}
-	
+
 	sess, err := b.app.Store().CreatePlaceholderSession(ctx, workspaceID, title)
 	if err != nil {
 		b.send(chatID, "Failed to create session: "+err.Error(), nil)
 		return
 	}
 	_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
-	
+
 	req := runner.StartRequest{
-		SessionID: sess.ID, 
-		Title:     title, 
-		Workspace: ws.Path, 
-		TopicID:   topicID, 
+		SessionID: sess.ID,
+		Title:     title,
+		Workspace: ws.Path,
+		TopicID:   topicID,
 		Model:     b.app.ResolveModel(sess, ws),
 	}
-	
+
 	if err := b.app.Runner().Prompt(ctx, req, prompt); err != nil {
 		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
-	
+
 	b.send(chatID, fmt.Sprintf("Created topic: %s", title), taskKeyboard(workspaceID, b.pinned(userID) == ws.Path))
 }
 
@@ -466,7 +509,7 @@ func resumeSession(ctx context.Context, b *Bot, chatID, userID int64, sessionID,
 		b.send(chatID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
-	
+
 	if sess.TopicID == 0 {
 		topicID, err := b.createForumTopic(topicTitle(prompt))
 		if err != nil {
@@ -478,16 +521,16 @@ func resumeSession(ctx context.Context, b *Bot, chatID, userID int64, sessionID,
 		_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
 		sess.TopicID = topicID
 	}
-	
+
 	req := runner.StartRequest{
-		SessionID: sess.ID, 
-		Title:     displaySession(sess), 
-		Workspace: ws.Path, 
-		TopicID:   sess.TopicID, 
-		Model:     b.app.ResolveModel(sess, ws), 
+		SessionID: sess.ID,
+		Title:     displaySession(sess),
+		Workspace: ws.Path,
+		TopicID:   sess.TopicID,
+		Model:     b.app.ResolveModel(sess, ws),
 		Existing:  true,
 	}
-	
+
 	if err := b.app.Runner().Prompt(ctx, req, prompt); err != nil {
 		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
