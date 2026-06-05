@@ -11,6 +11,7 @@ import (
 
 	"github.com/xiaot/pi-coordinator/internal/app"
 	"github.com/xiaot/pi-coordinator/internal/config"
+	"github.com/xiaot/pi-coordinator/internal/source/telegram"
 )
 
 func main() {
@@ -34,8 +35,28 @@ func main() {
 		logger.Error("initialize app", "error", err)
 		os.Exit(1)
 	}
-	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("run app", "error", err)
+	defer a.Close()
+
+	// Start config hot-reloading
+	go watchConfig(ctx, a, paths.ConfigPath, logger)
+
+	bot := telegram.NewBot(a)
+	if err := bot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("run bot", "error", err)
 		os.Exit(1)
+	}
+}
+
+func watchConfig(ctx context.Context, a *app.App, path string, logger *slog.Logger) {
+	err := config.Watch(ctx, path, func(cfg config.Config, err error) {
+		if err != nil {
+			logger.Warn("config reload failed", "error", err)
+			return
+		}
+		a.UpdateConfig(cfg)
+		logger.Info("config hot-reloaded successfully")
+	})
+	if err != nil {
+		logger.Warn("failed to watch config", "error", err)
 	}
 }

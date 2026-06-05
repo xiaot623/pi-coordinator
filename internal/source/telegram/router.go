@@ -1,0 +1,104 @@
+package telegram
+
+import (
+	"context"
+	"strings"
+)
+
+type HandlerFunc func(ctx context.Context, b *Bot, update Update)
+
+type Router struct {
+	bot              *Bot
+	commandHandlers  map[string]HandlerFunc
+	callbackHandlers map[string]HandlerFunc // Prefix match for callbacks
+	textHandler      HandlerFunc            // Fallback for text messages
+	topicHandler     HandlerFunc            // Handler for topic messages in the group
+}
+
+func NewRouter(bot *Bot) *Router {
+	return &Router{
+		bot:              bot,
+		commandHandlers:  make(map[string]HandlerFunc),
+		callbackHandlers: make(map[string]HandlerFunc),
+	}
+}
+
+// Command registers a handler for a specific command (e.g., "start", without the slash).
+func (r *Router) Command(cmd string, handler HandlerFunc) {
+	r.commandHandlers[cmd] = handler
+}
+
+// Callback registers a handler for a callback query prefix.
+func (r *Router) Callback(prefix string, handler HandlerFunc) {
+	r.callbackHandlers[prefix] = handler
+}
+
+// Text registers a handler for private text messages that are not commands.
+func (r *Router) Text(handler HandlerFunc) {
+	r.textHandler = handler
+}
+
+// Topic registers a handler for messages in the group chat.
+func (r *Router) Topic(handler HandlerFunc) {
+	r.topicHandler = handler
+}
+
+// HandleUpdate routes the incoming update to the appropriate handler.
+func (r *Router) HandleUpdate(ctx context.Context, update Update) {
+	if update.CallbackQuery != nil {
+		if update.CallbackQuery.From == nil || !r.bot.allowed(update.CallbackQuery.From.ID) {
+			return
+		}
+		r.bot.answerCallback(update.CallbackQuery.ID, "")
+		
+		data := update.CallbackQuery.Data
+		// Find longest matching prefix
+		var bestMatch string
+		var bestHandler HandlerFunc
+		
+		for prefix, handler := range r.callbackHandlers {
+			if strings.HasPrefix(data, prefix) {
+				if len(prefix) > len(bestMatch) {
+					bestMatch = prefix
+					bestHandler = handler
+				}
+			}
+		}
+		
+		if bestHandler != nil {
+			bestHandler(ctx, r.bot, update)
+		}
+		return
+	}
+
+	msg := update.Message
+	if msg == nil || msg.From == nil || msg.From.IsBot {
+		return
+	}
+	if !r.bot.allowed(msg.From.ID) {
+		return
+	}
+
+	if msg.Chat.IsPrivate() {
+		if msg.IsCommand() {
+			cmd := msg.Command()
+			if handler, ok := r.commandHandlers[cmd]; ok {
+				handler(ctx, r.bot, update)
+			} else {
+				r.bot.send(msg.Chat.ID, "Unknown command. Available: /workspace /new /sync /unpin /model", nil)
+			}
+			return
+		}
+		if r.textHandler != nil && strings.TrimSpace(msg.Text) != "" {
+			r.textHandler(ctx, r.bot, update)
+		}
+		return
+	}
+
+	// Topic message in group chat
+	if msg.Chat.ID == r.bot.app.Config().Telegram.GroupChatID && msg.MessageThreadID != 0 && strings.TrimSpace(msg.Text) != "" {
+		if r.topicHandler != nil {
+			r.topicHandler(ctx, r.bot, update)
+		}
+	}
+}
