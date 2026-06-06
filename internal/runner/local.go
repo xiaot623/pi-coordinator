@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,10 +18,12 @@ import (
 )
 
 type LocalOptions struct {
-	Binary      string
-	SessionDir  string
-	IdleTimeout time.Duration
-	Logger      *slog.Logger
+	Binary         string
+	SessionDir     string
+	IdleTimeout    time.Duration
+	Plugins        []string
+	PluginAgentDir string
+	Logger         *slog.Logger
 }
 
 type Options = LocalOptions
@@ -29,6 +34,9 @@ type Local struct {
 	procs       map[string]*LocalProcess
 	models      []ModelInfo
 	modelsReady bool
+	pluginOnce  sync.Once
+	pluginArgs  []string
+	pluginErr   error
 }
 
 var _ Runner = (*Local)(nil)
@@ -110,7 +118,13 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 		l.opts.Logger.Warn("cache pi models failed", "error", err)
 	}
 
-	args := []string{"--mode", "rpc", "--session-dir", l.opts.SessionDir, "--topic", intString(req.TopicID)}
+	args, err := l.baseArgs(ctx, "--mode", "rpc", "--session-dir", l.opts.SessionDir)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(l.opts.Plugins) > 0 {
+		args = append(args, "--topic", intString(req.TopicID))
+	}
 	if req.SessionID != "" {
 		args = append(args, "--session-id", req.SessionID)
 	}
@@ -160,10 +174,15 @@ func int64ListString(values []int64) string {
 }
 
 func (l *Local) queryAvailableModels(ctx context.Context) ([]ModelInfo, error) {
+	args, err := l.baseArgs(ctx, "--mode", "rpc", "--no-session")
+	if err != nil {
+		return nil, err
+	}
+
 	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(queryCtx, l.opts.Binary, "--mode", "rpc", "--no-session")
+	cmd := exec.CommandContext(queryCtx, l.opts.Binary, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -232,6 +251,198 @@ func (l *Local) queryAvailableModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, errors.New("pi returned no available models")
 	}
 	return models, nil
+}
+
+func (l *Local) baseArgs(ctx context.Context, args ...string) ([]string, error) {
+	out := append([]string(nil), args...)
+	pluginArgs, err := l.resolvedPluginArgs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(pluginArgs) > 0 {
+		withPlugins := make([]string, 0, len(out)+len(pluginArgs))
+		withPlugins = append(withPlugins, pluginArgs...)
+		withPlugins = append(withPlugins, out...)
+		return withPlugins, nil
+	}
+	return out, nil
+}
+
+func (l *Local) resolvedPluginArgs(ctx context.Context) ([]string, error) {
+	l.pluginOnce.Do(func() {
+		paths, err := l.resolvePlugins(ctx)
+		if err != nil {
+			l.pluginErr = err
+			return
+		}
+		args := []string{"--no-extensions"}
+		for _, path := range paths {
+			args = append(args, "--extension", path)
+		}
+		l.pluginArgs = args
+	})
+	if l.pluginErr != nil {
+		return nil, l.pluginErr
+	}
+	return append([]string(nil), l.pluginArgs...), nil
+}
+
+func (l *Local) resolvePlugins(ctx context.Context) ([]string, error) {
+	paths := make([]string, 0, len(l.opts.Plugins))
+	for _, plugin := range l.opts.Plugins {
+		plugin = strings.TrimSpace(plugin)
+		if plugin == "" {
+			continue
+		}
+		resolved, err := l.resolvePlugin(ctx, plugin)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, resolved...)
+	}
+	return paths, nil
+}
+
+func (l *Local) resolvePlugin(ctx context.Context, plugin string) ([]string, error) {
+	if isLocalPluginPath(plugin) {
+		if _, err := os.Stat(plugin); err != nil {
+			return nil, fmt.Errorf("plugin %q not found: %w", plugin, err)
+		}
+		return []string{plugin}, nil
+	}
+	if strings.HasPrefix(plugin, "npm:") || !strings.Contains(plugin, ":") {
+		return l.resolveNpmPlugin(ctx, plugin)
+	}
+	return nil, fmt.Errorf("unsupported plugin %q; use an npm package name or local extension path", plugin)
+}
+
+func (l *Local) resolveNpmPlugin(ctx context.Context, source string) ([]string, error) {
+	spec := strings.TrimPrefix(source, "npm:")
+	name := npmPackageName(spec)
+	if name == "" {
+		return nil, fmt.Errorf("invalid npm plugin %q", source)
+	}
+	if l.opts.PluginAgentDir == "" {
+		return nil, errors.New("plugin agent dir is required for npm plugins")
+	}
+
+	packageDir := filepath.Join(l.opts.PluginAgentDir, "npm", "node_modules", filepath.FromSlash(name))
+	source = "npm:" + spec
+	if _, err := os.Stat(filepath.Join(packageDir, "package.json")); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		if err := l.installNpmPlugin(ctx, spec); err != nil {
+			return nil, err
+		}
+	} else if !l.pluginSourceInSettings(source) {
+		if err := l.installNpmPlugin(ctx, spec); err != nil {
+			return nil, err
+		}
+	}
+	return extensionEntries(packageDir)
+}
+
+func (l *Local) installNpmPlugin(ctx context.Context, spec string) error {
+	source := "npm:" + spec
+	if l.opts.Logger != nil {
+		l.opts.Logger.Info("install pi plugin", "source", source, "agent_dir", l.opts.PluginAgentDir)
+	}
+	cmd := exec.CommandContext(ctx, l.opts.Binary, "install", source)
+	cmd.Env = append(cmd.Environ(), "PI_CODING_AGENT_DIR="+l.opts.PluginAgentDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("install plugin %s: %w: %s", source, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func (l *Local) pluginSourceInSettings(source string) bool {
+	data, err := os.ReadFile(filepath.Join(l.opts.PluginAgentDir, "settings.json"))
+	if err != nil {
+		return false
+	}
+	var settings struct {
+		Packages []any `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return false
+	}
+	for _, raw := range settings.Packages {
+		switch pkg := raw.(type) {
+		case string:
+			if pkg == source {
+				return true
+			}
+		case map[string]any:
+			if pkg["source"] == source {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func extensionEntries(packageDir string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(packageDir, "package.json"))
+	if err != nil {
+		return nil, err
+	}
+	var manifest struct {
+		Pi struct {
+			Extensions []string `json:"extensions"`
+		} `json:"pi"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, err
+	}
+	candidates := manifest.Pi.Extensions
+	if len(candidates) == 0 {
+		candidates = []string{"index.ts", "index.js"}
+	}
+	paths := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		path := candidate
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(packageDir, filepath.FromSlash(candidate))
+		}
+		if _, err := os.Stat(path); err != nil {
+			if len(manifest.Pi.Extensions) > 0 {
+				return nil, fmt.Errorf("extension entry %q not found in %s: %w", candidate, packageDir, err)
+			}
+			continue
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("plugin package %s does not declare pi.extensions and has no index.ts/index.js", packageDir)
+	}
+	return paths, nil
+}
+
+func isLocalPluginPath(plugin string) bool {
+	return filepath.IsAbs(plugin) || strings.HasPrefix(plugin, ".") || strings.HasPrefix(plugin, "~")
+}
+
+func npmPackageName(spec string) string {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return ""
+	}
+	if strings.HasPrefix(spec, "@") {
+		slash := strings.Index(spec, "/")
+		if slash < 0 {
+			return ""
+		}
+		if version := strings.Index(spec[slash+1:], "@"); version >= 0 {
+			return spec[:slash+1+version]
+		}
+		return spec
+	}
+	if version := strings.Index(spec, "@"); version >= 0 {
+		return spec[:version]
+	}
+	return spec
 }
 
 func (l *Local) watch(proc *LocalProcess, r io.Reader) {

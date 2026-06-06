@@ -16,6 +16,8 @@ import (
 
 var ErrConfigMissing = errors.New("config missing")
 
+var defaultRunnerPlugins = []string{"@hahahhh/pi-trace@next"}
+
 type Config struct {
 	Telegram struct {
 		BotToken     string  `yaml:"bot_token"`
@@ -26,6 +28,7 @@ type Config struct {
 		IdleTimeout Duration `yaml:"idle_timeout"`
 		SessionDir  string   `yaml:"session_dir"`
 		Binary      string   `yaml:"binary"`
+		Plugins     []string `yaml:"plugins"`
 	} `yaml:"runner"`
 	GlobalModel string `yaml:"global_model"`
 }
@@ -76,10 +79,12 @@ func Load() (Config, Paths, error) {
 	cfg.Runner.IdleTimeout.Duration = 5 * time.Minute
 	cfg.Runner.SessionDir = "~/.pi/agent/sessions"
 	cfg.Runner.Binary = "pi"
+	cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, paths, err
 	}
 	cfg.Runner.SessionDir = ExpandPath(cfg.Runner.SessionDir)
+	cfg.Runner.Plugins = expandPaths(cfg.Runner.Plugins)
 	if cfg.Runner.Binary == "" {
 		cfg.Runner.Binary = "pi"
 	}
@@ -170,11 +175,13 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					cfg.Runner.IdleTimeout.Duration = 5 * time.Minute
 					cfg.Runner.SessionDir = "~/.pi/agent/sessions"
 					cfg.Runner.Binary = "pi"
+					cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
 					if err := yaml.Unmarshal(data, &cfg); err != nil {
 						onChange(Config{}, err)
 						continue
 					}
 					cfg.Runner.SessionDir = ExpandPath(cfg.Runner.SessionDir)
+					cfg.Runner.Plugins = expandPaths(cfg.Runner.Plugins)
 					if cfg.Runner.Binary == "" {
 						cfg.Runner.Binary = "pi"
 					}
@@ -218,6 +225,21 @@ func ExpandPath(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+func expandPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	expanded := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		expanded = append(expanded, ExpandPath(path))
+	}
+	return expanded
 }
 
 //go:embed default_config.yaml

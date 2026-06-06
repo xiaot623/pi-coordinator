@@ -27,10 +27,12 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		return nil, err
 	}
 	rm := runner.NewLocal(runner.LocalOptions{
-		Binary:      cfg.Runner.Binary,
-		SessionDir:  cfg.Runner.SessionDir,
-		IdleTimeout: cfg.Runner.IdleTimeout.Duration,
-		Logger:      logger,
+		Binary:         cfg.Runner.Binary,
+		SessionDir:     cfg.Runner.SessionDir,
+		IdleTimeout:    cfg.Runner.IdleTimeout.Duration,
+		Plugins:        cfg.Runner.Plugins,
+		PluginAgentDir: filepath.Join(paths.DataDir, "agent"),
+		Logger:         logger,
 	})
 	return &App{
 		cfg:    &cfg,
@@ -46,11 +48,11 @@ func (a *App) Close() {
 	a.store.Close()
 }
 
-func (a *App) Store() *store.Store { return a.store }
+func (a *App) Store() *store.Store   { return a.store }
 func (a *App) Runner() runner.Runner { return a.runner }
 func (a *App) Config() config.Config { return *a.cfg }
-func (a *App) Paths() config.Paths { return a.paths }
-func (a *App) Logger() *slog.Logger { return a.log }
+func (a *App) Paths() config.Paths   { return a.paths }
+func (a *App) Logger() *slog.Logger  { return a.log }
 
 // UpdateConfig updates the in-memory config safely.
 func (a *App) UpdateConfig(cfg config.Config) {
