@@ -18,12 +18,13 @@ import (
 )
 
 type LocalOptions struct {
-	Binary         string
-	SessionDir     string
-	IdleTimeout    time.Duration
-	Plugins        []string
-	PluginAgentDir string
-	Logger         *slog.Logger
+	Binary               string
+	SessionDir           string
+	IdleTimeout          time.Duration
+	Plugins              []string
+	PluginAgentDir       string
+	PluginUpdateInterval time.Duration
+	Logger               *slog.Logger
 }
 
 type Options = LocalOptions
@@ -34,9 +35,6 @@ type Local struct {
 	procs       map[string]*LocalProcess
 	models      []ModelInfo
 	modelsReady bool
-	pluginOnce  sync.Once
-	pluginArgs  []string
-	pluginErr   error
 }
 
 var _ Runner = (*Local)(nil)
@@ -269,22 +267,15 @@ func (l *Local) baseArgs(ctx context.Context, args ...string) ([]string, error) 
 }
 
 func (l *Local) resolvedPluginArgs(ctx context.Context) ([]string, error) {
-	l.pluginOnce.Do(func() {
-		paths, err := l.resolvePlugins(ctx)
-		if err != nil {
-			l.pluginErr = err
-			return
-		}
-		args := []string{"--no-extensions"}
-		for _, path := range paths {
-			args = append(args, "--extension", path)
-		}
-		l.pluginArgs = args
-	})
-	if l.pluginErr != nil {
-		return nil, l.pluginErr
+	paths, err := l.resolvePlugins(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return append([]string(nil), l.pluginArgs...), nil
+	args := []string{"--no-extensions"}
+	for _, path := range paths {
+		args = append(args, "--extension", path)
+	}
+	return args, nil
 }
 
 func (l *Local) resolvePlugins(ctx context.Context) ([]string, error) {
@@ -335,9 +326,22 @@ func (l *Local) resolveNpmPlugin(ctx context.Context, source string) ([]string, 
 		if err := l.installNpmPlugin(ctx, spec); err != nil {
 			return nil, err
 		}
+		if err := l.writePluginUpdatedAt(source, time.Now()); err != nil && l.opts.Logger != nil {
+			l.opts.Logger.Warn("record pi plugin update time failed", "source", source, "error", err)
+		}
 	} else if !l.pluginSourceInSettings(source) {
 		if err := l.installNpmPlugin(ctx, spec); err != nil {
 			return nil, err
+		}
+		if err := l.writePluginUpdatedAt(source, time.Now()); err != nil && l.opts.Logger != nil {
+			l.opts.Logger.Warn("record pi plugin update time failed", "source", source, "error", err)
+		}
+	} else if l.pluginUpdateDue(source, time.Now()) {
+		if err := l.updateNpmPlugin(ctx, source); err != nil {
+			return nil, err
+		}
+		if err := l.writePluginUpdatedAt(source, time.Now()); err != nil && l.opts.Logger != nil {
+			l.opts.Logger.Warn("record pi plugin update time failed", "source", source, "error", err)
 		}
 	}
 	return extensionEntries(packageDir)
@@ -353,6 +357,19 @@ func (l *Local) installNpmPlugin(ctx context.Context, spec string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("install plugin %s: %w: %s", source, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func (l *Local) updateNpmPlugin(ctx context.Context, source string) error {
+	if l.opts.Logger != nil {
+		l.opts.Logger.Info("update pi plugin", "source", source, "agent_dir", l.opts.PluginAgentDir)
+	}
+	cmd := exec.CommandContext(ctx, l.opts.Binary, "update", source)
+	cmd.Env = append(cmd.Environ(), "PI_CODING_AGENT_DIR="+l.opts.PluginAgentDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("update plugin %s: %w: %s", source, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
@@ -381,6 +398,81 @@ func (l *Local) pluginSourceInSettings(source string) bool {
 		}
 	}
 	return false
+}
+
+func (l *Local) pluginUpdateDue(source string, now time.Time) bool {
+	if l.opts.PluginUpdateInterval < 0 {
+		return false
+	}
+	if l.opts.PluginUpdateInterval == 0 {
+		return true
+	}
+	updatedAt, ok := l.pluginUpdatedAt(source)
+	if !ok {
+		return true
+	}
+	return !updatedAt.After(now) && now.Sub(updatedAt) >= l.opts.PluginUpdateInterval
+}
+
+func (l *Local) pluginUpdatedAt(source string) (time.Time, bool) {
+	updates, err := l.readPluginUpdateTimes()
+	if err != nil {
+		return time.Time{}, false
+	}
+	raw := strings.TrimSpace(updates[source])
+	if raw == "" {
+		return time.Time{}, false
+	}
+	updatedAt, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return updatedAt, true
+}
+
+func (l *Local) writePluginUpdatedAt(source string, updatedAt time.Time) error {
+	if l.opts.PluginAgentDir == "" {
+		return errors.New("plugin agent dir is required")
+	}
+	updates, err := l.readPluginUpdateTimes()
+	if err != nil {
+		if l.opts.Logger != nil {
+			l.opts.Logger.Warn("reset pi plugin update times", "error", err)
+		}
+		updates = map[string]string{}
+	}
+	updates[source] = updatedAt.UTC().Format(time.RFC3339)
+	if err := os.MkdirAll(l.opts.PluginAgentDir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(updates, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(l.pluginUpdatesPath(), data, 0o600)
+}
+
+func (l *Local) readPluginUpdateTimes() (map[string]string, error) {
+	updates := map[string]string{}
+	data, err := os.ReadFile(l.pluginUpdatesPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return updates, nil
+		}
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return updates, nil
+	}
+	if err := json.Unmarshal(data, &updates); err != nil {
+		return nil, err
+	}
+	return updates, nil
+}
+
+func (l *Local) pluginUpdatesPath() string {
+	return filepath.Join(l.opts.PluginAgentDir, "plugin-updates.json")
 }
 
 func extensionEntries(packageDir string) ([]string, error) {

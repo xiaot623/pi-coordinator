@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/config"
 	"github.com/xiaot/pi-coordinator/internal/runner"
@@ -27,12 +28,13 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		return nil, err
 	}
 	rm := runner.NewLocal(runner.LocalOptions{
-		Binary:         cfg.Runner.Binary,
-		SessionDir:     cfg.Runner.SessionDir,
-		IdleTimeout:    cfg.Runner.IdleTimeout.Duration,
-		Plugins:        cfg.Runner.Plugins,
-		PluginAgentDir: filepath.Join(paths.DataDir, "agent"),
-		Logger:         logger,
+		Binary:               cfg.Runner.Binary,
+		SessionDir:           cfg.Runner.SessionDir,
+		IdleTimeout:          cfg.Runner.IdleTimeout.Duration,
+		Plugins:              cfg.Runner.Plugins,
+		PluginAgentDir:       filepath.Join(paths.DataDir, "agent"),
+		PluginUpdateInterval: time.Duration(cfg.Runner.PluginUpdateIntervalMinutes) * time.Minute,
+		Logger:               logger,
 	})
 	return &App{
 		cfg:    &cfg,

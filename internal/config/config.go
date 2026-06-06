@@ -18,6 +18,8 @@ var ErrConfigMissing = errors.New("config missing")
 
 var defaultRunnerPlugins = []string{"@hahahhh/pi-trace@next"}
 
+const defaultPluginUpdateIntervalMinutes = 1440
+
 type Config struct {
 	Telegram struct {
 		BotToken     string  `yaml:"bot_token"`
@@ -25,10 +27,11 @@ type Config struct {
 		AllowedUsers []int64 `yaml:"allowed_users"`
 	} `yaml:"telegram"`
 	Runner struct {
-		IdleTimeout Duration `yaml:"idle_timeout"`
-		SessionDir  string   `yaml:"session_dir"`
-		Binary      string   `yaml:"binary"`
-		Plugins     []string `yaml:"plugins"`
+		IdleTimeout                 Duration `yaml:"idle_timeout"`
+		SessionDir                  string   `yaml:"session_dir"`
+		Binary                      string   `yaml:"binary"`
+		Plugins                     []string `yaml:"plugins"`
+		PluginUpdateIntervalMinutes int      `yaml:"plugin_update_interval_minutes"`
 	} `yaml:"runner"`
 	GlobalModel string `yaml:"global_model"`
 }
@@ -80,6 +83,7 @@ func Load() (Config, Paths, error) {
 	cfg.Runner.SessionDir = "~/.pi/agent/sessions"
 	cfg.Runner.Binary = "pi"
 	cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
+	cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, paths, err
 	}
@@ -176,6 +180,7 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					cfg.Runner.SessionDir = "~/.pi/agent/sessions"
 					cfg.Runner.Binary = "pi"
 					cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
+					cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 					if err := yaml.Unmarshal(data, &cfg); err != nil {
 						onChange(Config{}, err)
 						continue

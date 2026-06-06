@@ -9,5 +9,7 @@ runner:
   binary: "pi"
   plugins:
     - "@hahahhh/pi-trace@next"
+  # 0 checks on every Pi startup; negative values disable update checks.
+  plugin_update_interval_minutes: 1440
 
 global_model: ""
