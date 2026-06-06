@@ -86,7 +86,7 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 			return
 		}
 		if prompt != "" {
-			startNewTask(ctx, b, update.Message.Chat, update.Message.From.ID, ws.ID, prompt)
+			startNewTask(ctx, b, update.Message.Chat, update.Message.From.ID, ws.ID, prompt, nil)
 			return
 		}
 		promptForPinnedNewTask(b, update.Message.Chat, ws.Path)
@@ -141,7 +141,11 @@ func handleBotsCmd(ctx context.Context, b *Bot, update Update) {
 
 func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 	msg := update.Message
-	text := strings.TrimSpace(msg.Text)
+	text := effectiveText(msg)
+	images, err := b.extractImages(ctx, msg)
+	if err != nil {
+		b.app.Logger().Warn("telegram extract images failed", "error", err)
+	}
 	userID := msg.From.ID
 	chatID := msg.Chat.ID
 
@@ -149,11 +153,11 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 		switch p.Kind {
 		case "await_new_prompt":
 			b.clearPending(userID)
-			startNewTask(ctx, b, msg.Chat, userID, p.WorkspaceID, text)
+			startNewTask(ctx, b, msg.Chat, userID, p.WorkspaceID, text, images)
 			return
 		case "await_resume_prompt":
 			b.clearPending(userID)
-			resumeSession(ctx, b, msg.Chat, userID, p.SessionID, text)
+			resumeSession(ctx, b, msg.Chat, userID, p.SessionID, text, images)
 			return
 		}
 	}
@@ -164,7 +168,7 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 			b.send(chatID, "Pinned workspace is unavailable: "+err.Error(), nil)
 			return
 		}
-		startNewTask(ctx, b, msg.Chat, userID, ws.ID, text)
+		startNewTask(ctx, b, msg.Chat, userID, ws.ID, text, images)
 		return
 	}
 	if !msg.Chat.IsPrivate() {
@@ -201,6 +205,11 @@ func promptForPinnedNewTask(b *Bot, chat Chat, workspacePath string) {
 
 func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 	msg := update.Message
+	text := effectiveText(msg)
+	images, err := b.extractImages(ctx, msg)
+	if err != nil {
+		b.app.Logger().Warn("telegram extract images failed", "error", err)
+	}
 	sess, err := b.app.Store().GetSessionByTopic(ctx, msg.MessageThreadID)
 	if err != nil {
 		return
@@ -220,7 +229,7 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 		Existing:  true,
 		Role:      genericRole,
 	}
-	rememberTraceRetry(b, msg.From.ID, "retry_resume_task", msg.Chat, 0, sess.ID, msg.Text)
+	rememberTraceRetry(b, msg.From.ID, "retry_resume_task", msg.Chat, 0, sess.ID, text, images)
 	if traceBot, err := b.ensureTraceBot(ctx, req.Role, msg.Chat.ID); err != nil {
 		return
 	} else {
@@ -228,7 +237,8 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 		req.TraceTelegramChatIDs = traceBot.ChatIDs
 	}
 
-	if err := b.app.Runner().Steer(ctx, req, msg.Text); err != nil {
+	runnerPrompt := appendImageContext(text, images)
+	if err := b.app.Runner().Steer(ctx, req, runnerPrompt, images); err != nil {
 		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to send to pi: "+err.Error(), nil)
 		return
 	}
@@ -280,22 +290,24 @@ func handleTraceRetry(ctx context.Context, b *Bot, update Update) {
 	if chat.ID == 0 {
 		chat = q.Message.Chat
 	}
+	images := decodeImagesJSON(p.ImagesJSON)
 	switch p.Kind {
 	case "retry_new_task":
-		startNewTask(ctx, b, chat, q.From.ID, p.WorkspaceID, p.Prompt)
+		startNewTask(ctx, b, chat, q.From.ID, p.WorkspaceID, p.Prompt, images)
 	case "retry_resume_task":
-		resumeSession(ctx, b, chat, q.From.ID, p.SessionID, p.Prompt)
+		resumeSession(ctx, b, chat, q.From.ID, p.SessionID, p.Prompt, images)
 	default:
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "No pending trace setup to retry.", nil)
 	}
 }
 
-func rememberTraceRetry(b *Bot, userID int64, kind string, chat Chat, workspaceID int64, sessionID, prompt string) {
+func rememberTraceRetry(b *Bot, userID int64, kind string, chat Chat, workspaceID int64, sessionID, prompt string, images []runner.ImageAttachment) {
 	b.setPending(userID, PendingState{
 		Kind:         kind,
 		WorkspaceID:  workspaceID,
 		SessionID:    sessionID,
 		Prompt:       prompt,
+		ImagesJSON:   encodeImagesJSON(images),
 		TaskChatID:   chat.ID,
 		TaskChatType: chat.Type,
 	})
@@ -477,7 +489,8 @@ func handleChooseWorkspaceForNewTask(ctx context.Context, b *Bot, update Update)
 	p, _ := b.getPending(q.From.ID)
 	if p.Prompt != "" {
 		b.clearPending(q.From.ID)
-		startNewTask(ctx, b, q.Message.Chat, q.From.ID, id, p.Prompt)
+		images := decodeImagesJSON(p.ImagesJSON)
+		startNewTask(ctx, b, q.Message.Chat, q.From.ID, id, p.Prompt, images)
 		return
 	}
 	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
@@ -589,7 +602,22 @@ func findWorkspaceForPin(ctx context.Context, b *Bot, query string) (store.Works
 
 // -- Action Implementations --
 
-func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspaceID int64, prompt string) {
+func appendImageContext(prompt string, images []runner.ImageAttachment) string {
+	if len(images) == 0 {
+		return prompt
+	}
+	var sb strings.Builder
+	sb.WriteString(prompt)
+	if strings.TrimSpace(prompt) != "" {
+		sb.WriteString("\n\n")
+	}
+	for i := range images {
+		sb.WriteString(fmt.Sprintf("<file name=\"pasted_image_%d.jpg\">[Image provided inline by the user, no local path]</file>\n", i+1))
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspaceID int64, prompt string, images []runner.ImageAttachment) {
 	chatID := chat.ID
 	ws, err := b.app.Store().GetWorkspace(ctx, workspaceID)
 	if err != nil {
@@ -597,7 +625,7 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 		return
 	}
 
-	rememberTraceRetry(b, userID, "retry_new_task", chat, workspaceID, "", prompt)
+	rememberTraceRetry(b, userID, "retry_new_task", chat, workspaceID, "", prompt, images)
 	traceBot, err := b.ensureTraceBot(ctx, genericRole, chatID)
 	if err != nil {
 		return
@@ -633,7 +661,8 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 	req.TraceTelegramToken = traceBot.Token
 	req.TraceTelegramChatIDs = traceBot.ChatIDs
 
-	if err := b.app.Runner().Prompt(ctx, req, prompt); err != nil {
+	runnerPrompt := appendImageContext(prompt, images)
+	if err := b.app.Runner().Prompt(ctx, req, runnerPrompt, images); err != nil {
 		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
@@ -642,7 +671,7 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 	b.send(chatID, fmt.Sprintf("Created topic: %s", title), createdTopicKeyboard(workspaceID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, topicID))
 }
 
-func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID, prompt string) {
+func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID, prompt string, images []runner.ImageAttachment) {
 	chatID := chat.ID
 	sess, err := b.app.Store().GetSession(ctx, sessionID)
 	if err != nil {
@@ -655,7 +684,7 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 		return
 	}
 
-	rememberTraceRetry(b, userID, "retry_resume_task", chat, 0, sessionID, prompt)
+	rememberTraceRetry(b, userID, "retry_resume_task", chat, 0, sessionID, prompt, images)
 	traceBot, err := b.ensureTraceBot(ctx, genericRole, chatID)
 	if err != nil {
 		return
@@ -685,7 +714,8 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 	req.TraceTelegramToken = traceBot.Token
 	req.TraceTelegramChatIDs = traceBot.ChatIDs
 
-	if err := b.app.Runner().Prompt(ctx, req, prompt); err != nil {
+	runnerPrompt := appendImageContext(prompt, images)
+	if err := b.app.Runner().Prompt(ctx, req, runnerPrompt, images); err != nil {
 		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}

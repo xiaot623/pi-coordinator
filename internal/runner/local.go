@@ -60,26 +60,34 @@ func NewManager(opts LocalOptions) *Local {
 	return NewLocal(opts)
 }
 
-func (l *Local) Prompt(ctx context.Context, req StartRequest, message string) error {
+func (l *Local) Prompt(ctx context.Context, req StartRequest, message string, images []ImageAttachment) error {
 	proc, _, err := l.ensure(ctx, req)
 	if err != nil {
 		return err
 	}
-	return proc.Send(map[string]any{"type": "prompt", "message": message})
+	return proc.Send(buildRPCPayload("prompt", message, images))
 }
 
-func (l *Local) Steer(ctx context.Context, req StartRequest, message string) error {
+func (l *Local) Steer(ctx context.Context, req StartRequest, message string, images []ImageAttachment) error {
 	proc, fresh, err := l.ensure(ctx, req)
 	if err != nil {
 		return err
 	}
 	if fresh {
-		return proc.Send(map[string]any{"type": "prompt", "message": message})
+		return proc.Send(buildRPCPayload("prompt", message, images))
 	}
 	if proc.IsStreaming() {
-		return proc.Send(map[string]any{"type": "steer", "message": message})
+		return proc.Send(buildRPCPayload("steer", message, images))
 	}
-	return proc.Send(map[string]any{"type": "prompt", "message": message})
+	return proc.Send(buildRPCPayload("prompt", message, images))
+}
+
+func buildRPCPayload(kind string, message string, images []ImageAttachment) map[string]any {
+	payload := map[string]any{"type": kind, "message": message}
+	if len(images) > 0 {
+		payload["images"] = images
+	}
+	return payload
 }
 
 func (l *Local) AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo, error) {

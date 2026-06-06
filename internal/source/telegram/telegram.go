@@ -3,15 +3,18 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/app"
+	"github.com/xiaot/pi-coordinator/internal/runner"
 )
 
 type Bot struct {
@@ -34,6 +37,7 @@ type PendingState struct {
 	WorkspaceID     int64
 	SessionID       string
 	Prompt          string
+	ImagesJSON      string // JSON-serialised []runner.ImageAttachment, for trace retry
 	TaskChatID      int64
 	TaskChatType    string
 	PromptChatID    int64
@@ -445,8 +449,18 @@ type Message struct {
 	From              *User              `json:"from"`
 	Chat              Chat               `json:"chat"`
 	Text              string             `json:"text"`
+	Caption           string             `json:"caption"`
+	Photo             []PhotoSize        `json:"photo"`
 	ReplyToMessage    *Message           `json:"reply_to_message"`
 	ManagedBotCreated *ManagedBotCreated `json:"managed_bot_created"`
+}
+
+type PhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int64  `json:"file_size"`
 }
 
 type User struct {
@@ -506,4 +520,92 @@ type ManagedBotCreated struct {
 type ManagedBotUpdated struct {
 	User *User `json:"user"`
 	Bot  *User `json:"bot"`
+}
+
+// -- Message helpers --
+
+func hasContent(msg *Message) bool {
+	return strings.TrimSpace(msg.Text) != "" ||
+		strings.TrimSpace(msg.Caption) != "" ||
+		len(msg.Photo) > 0
+}
+
+func effectiveText(msg *Message) string {
+	if t := strings.TrimSpace(msg.Text); t != "" {
+		return t
+	}
+	return strings.TrimSpace(msg.Caption)
+}
+
+// -- Image extraction --
+
+func (b *Bot) extractImages(ctx context.Context, msg *Message) ([]runner.ImageAttachment, error) {
+	if len(msg.Photo) == 0 {
+		return nil, nil
+	}
+	// Use the largest photo size (last in the array).
+	largest := msg.Photo[len(msg.Photo)-1]
+	data, err := b.downloadFile(ctx, largest.FileID)
+	if err != nil {
+		return nil, fmt.Errorf("download photo: %w", err)
+	}
+	mimeType := "image/jpeg" // Telegram photos are always JPEG.
+	return []runner.ImageAttachment{{
+		Type:     "image",
+		Data:     base64.StdEncoding.EncodeToString(data),
+		MimeType: mimeType,
+	}}, nil
+}
+
+func (b *Bot) downloadFile(ctx context.Context, fileID string) ([]byte, error) {
+	var fileResp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := b.callTelegramCtx(ctx, "getFile", map[string]any{"file_id": fileID}, &fileResp, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if !fileResp.OK {
+		return nil, errors.New("getFile: telegram returned not ok")
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.app.Config().Telegram.BotToken, fileResp.Result.FilePath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download file returned %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func encodeImagesJSON(images []runner.ImageAttachment) string {
+	if len(images) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(images)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func decodeImagesJSON(raw string) []runner.ImageAttachment {
+	if raw == "" {
+		return nil
+	}
+	var images []runner.ImageAttachment
+	if err := json.Unmarshal([]byte(raw), &images); err != nil {
+		return nil
+	}
+	return images
 }

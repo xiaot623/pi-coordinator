@@ -106,13 +106,13 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 			r.handleCommand(ctx, update)
 			return
 		}
-		if r.textHandler != nil && strings.TrimSpace(msg.Text) != "" {
+		if r.textHandler != nil && hasContent(msg) {
 			r.textHandler(ctx, r.bot, update)
 		}
 		return
 	}
 
-	if msg.Chat.ID != r.bot.app.Config().Telegram.GroupChatID || strings.TrimSpace(msg.Text) == "" {
+	if msg.Chat.ID != r.bot.app.Config().Telegram.GroupChatID || !hasContent(msg) {
 		return
 	}
 
