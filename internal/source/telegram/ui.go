@@ -217,6 +217,22 @@ func taskKeyboard(workspaceID int64, pinned bool) inlineKeyboardMarkup {
 	}}}
 }
 
+func createdTopicKeyboard(workspaceID int64, pinned bool, groupChatID int64, topicID int) inlineKeyboardMarkup {
+	markup := taskKeyboard(workspaceID, pinned)
+	markup.InlineKeyboard = append(
+		[][]inlineKeyboardButton{inlineKeyboardRow(inlineKeyboardButton{Text: "Follow up", URL: topicURL(groupChatID, topicID)})},
+		markup.InlineKeyboard...,
+	)
+	return markup
+}
+
+func topicURL(groupChatID int64, topicID int) string {
+	chatID := strconv.FormatInt(groupChatID, 10)
+	chatID = strings.TrimPrefix(chatID, "-")
+	chatID = strings.TrimPrefix(chatID, "100")
+	return "https://t.me/c/" + chatID + "/" + strconv.Itoa(topicID)
+}
+
 func modelScopeText(refreshed bool) string {
 	if refreshed {
 		return "Choose model scope (models refreshed from pi):"

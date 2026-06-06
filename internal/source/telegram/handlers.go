@@ -639,7 +639,7 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 	}
 	clearTraceRetry(b, userID)
 
-	b.send(chatID, fmt.Sprintf("Created topic: %s", title), taskKeyboard(workspaceID, b.pinned(userID) == ws.Path))
+	b.send(chatID, fmt.Sprintf("Created topic: %s", title), createdTopicKeyboard(workspaceID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, topicID))
 }
 
 func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID, prompt string) {
