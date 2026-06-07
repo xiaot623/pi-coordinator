@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/xiaot/pi-coordinator/internal/gitops"
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/store"
 )
@@ -20,6 +21,8 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("add", handleAddCmd)
 	b.router.Command("new", handleNewCmd)
 	b.router.Command("open", handleOpenCmd)
+	b.router.Command("rebase", handleRebaseCmd)
+	b.router.Command("commit", handleCommitCmd)
 	b.router.Command("pin", handlePinCmd)
 	b.router.Command("unpin", handleUnpin)
 	b.router.Command("model", handleModelCmd)
@@ -71,7 +74,7 @@ func (b *Bot) registerHandlers() {
 // -- Command Handlers --
 
 func handleHelp(ctx context.Context, b *Bot, update Update) {
-	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, or /new to start a task.", nil)
+	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, /new to start a task, and /rebase or /commit inside a session topic.", nil)
 }
 
 func handleSync(ctx context.Context, b *Bot, update Update) {
@@ -113,18 +116,8 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 
 func handleOpenCmd(ctx context.Context, b *Bot, update Update) {
 	msg := update.Message
-	if msg.Chat.ID != b.app.Config().Telegram.GroupChatID || msg.MessageThreadID == 0 || msg.MessageThreadID == generalTopicThreadID {
-		b.send(msg.Chat.ID, "/open is only available inside a session topic.", nil)
-		return
-	}
-	sess, err := b.app.Store().GetSessionByTopic(ctx, msg.MessageThreadID)
-	if err != nil {
-		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "No session is linked to this topic.", nil)
-		return
-	}
-	ws, err := b.app.Store().GetWorkspace(ctx, sess.WorkspaceID)
-	if err != nil {
-		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to read workspace: "+err.Error(), nil)
+	sess, ws, ok := sessionTopicCommandContext(ctx, b, msg, "/open")
+	if !ok {
 		return
 	}
 	tool := strings.TrimSpace(b.app.Config().OpenTool)
@@ -141,6 +134,102 @@ func handleOpenCmd(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Opened "+openLabel+" with "+tool+": "+openPath, nil)
+}
+
+func handleRebaseCmd(ctx context.Context, b *Bot, update Update) {
+	msg := update.Message
+	sess, ws, ok := gitSessionCommandContext(ctx, b, msg, "/rebase")
+	if !ok {
+		return
+	}
+	result, err := gitops.Run(ctx, "rebase.sh", map[string]string{
+		"PI_ORIGINAL_WORKSPACE": originalWorkspacePath(sess, ws),
+		"PI_SESSION_ID":         sess.ID,
+		"PI_WORKTREE_PATH":      sess.WorktreePath,
+	})
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Rebase failed: "+err.Error()+"\nWorktree: "+sess.WorktreePath, nil)
+		return
+	}
+	baseBranch, _ := gitops.RequireValue(result.Values, "BASE_BRANCH")
+	headSHA, _ := gitops.RequireValue(result.Values, "HEAD_SHA")
+	text := fmt.Sprintf("Rebased onto %s.\nWorktree: %s\nHEAD: %s", baseBranch, sess.WorktreePath, headSHA)
+	if gitops.BoolValue(result.Values, "STASHED") {
+		text += "\nStashed and restored local changes."
+	}
+	b.sendMessage(msg.Chat.ID, msg.MessageThreadID, text, nil)
+}
+
+func handleCommitCmd(ctx context.Context, b *Bot, update Update) {
+	msg := update.Message
+	rawMessage := strings.TrimSpace(msg.CommandArguments())
+	if rawMessage == "" {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Usage: /commit <msg>\n<detail can be empty or multi-line>", nil)
+		return
+	}
+	sess, ws, ok := gitSessionCommandContext(ctx, b, msg, "/commit")
+	if !ok {
+		return
+	}
+	result, err := gitops.Run(ctx, "commit.sh", map[string]string{
+		"PI_COMMIT_MESSAGE_RAW": rawMessage,
+		"PI_ORIGINAL_WORKSPACE": originalWorkspacePath(sess, ws),
+		"PI_SESSION_ID":         sess.ID,
+		"PI_WORKTREE_BRANCH":    sess.WorktreeBranch,
+		"PI_WORKTREE_PATH":      sess.WorktreePath,
+	})
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Commit failed: "+err.Error()+"\nWorktree: "+sess.WorktreePath, nil)
+		return
+	}
+	baseBranch, _ := gitops.RequireValue(result.Values, "BASE_BRANCH")
+	headSHA, _ := gitops.RequireValue(result.Values, "HEAD_SHA")
+	text := fmt.Sprintf("Committed to %s.\nWorkspace: %s\nWorktree: %s\nHEAD: %s", baseBranch, originalWorkspacePath(sess, ws), sess.WorktreePath, headSHA)
+	if gitops.BoolValue(result.Values, "CREATED_COMMIT") {
+		text += "\nCreated a new commit from current worktree changes."
+	}
+	b.sendMessage(msg.Chat.ID, msg.MessageThreadID, text, nil)
+}
+
+func sessionTopicCommandContext(ctx context.Context, b *Bot, msg *Message, command string) (store.Session, store.Workspace, bool) {
+	if msg.Chat.ID != b.app.Config().Telegram.GroupChatID || msg.MessageThreadID == 0 || msg.MessageThreadID == generalTopicThreadID {
+		b.send(msg.Chat.ID, command+" is only available inside a session topic.", nil)
+		return store.Session{}, store.Workspace{}, false
+	}
+	sess, err := b.app.Store().GetSessionByTopic(ctx, msg.MessageThreadID)
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "No session is linked to this topic.", nil)
+		return store.Session{}, store.Workspace{}, false
+	}
+	ws, err := b.app.Store().GetWorkspace(ctx, sess.WorkspaceID)
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to read workspace: "+err.Error(), nil)
+		return store.Session{}, store.Workspace{}, false
+	}
+	return sess, ws, true
+}
+
+func gitSessionCommandContext(ctx context.Context, b *Bot, msg *Message, command string) (store.Session, store.Workspace, bool) {
+	sess, ws, ok := sessionTopicCommandContext(ctx, b, msg, command)
+	if !ok {
+		return store.Session{}, store.Workspace{}, false
+	}
+	if sess.RunnerType != "worktree" && sess.RunnerType != "docker" {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, command+" is only available for worktree and docker sessions.", nil)
+		return store.Session{}, store.Workspace{}, false
+	}
+	if sess.WorktreePath == "" || sess.WorktreeBranch == "" {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, command+" requires a session worktree, but this session has no worktree metadata.", nil)
+		return store.Session{}, store.Workspace{}, false
+	}
+	return sess, ws, true
+}
+
+func originalWorkspacePath(sess store.Session, ws store.Workspace) string {
+	if strings.TrimSpace(sess.OriginalWorkspacePath) != "" {
+		return sess.OriginalWorkspacePath
+	}
+	return ws.Path
 }
 
 func handlePinCmd(ctx context.Context, b *Bot, update Update) {
