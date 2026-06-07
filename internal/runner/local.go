@@ -40,13 +40,14 @@ type Local struct {
 var _ Runner = (*Local)(nil)
 
 type LocalProcess struct {
-	sessionID string
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	mu        sync.Mutex
-	streaming bool
-	startedAt time.Time
-	lastUsed  time.Time
+	sessionID    string
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	mu           sync.Mutex
+	streaming    bool
+	startedAt    time.Time
+	lastUsed     time.Time
+	currentModel string
 }
 
 func NewLocal(opts LocalOptions) *Local {
@@ -66,7 +67,7 @@ func (l *Local) Prompt(ctx context.Context, req StartRequest, message string, im
 	if err != nil {
 		return err
 	}
-	return proc.Send(buildRPCPayload("prompt", message, images))
+	return proc.SendWithModel(req.Model, buildRPCPayload("prompt", message, images))
 }
 
 func (l *Local) Steer(ctx context.Context, req StartRequest, message string, images []ImageAttachment) error {
@@ -75,12 +76,12 @@ func (l *Local) Steer(ctx context.Context, req StartRequest, message string, ima
 		return err
 	}
 	if fresh {
-		return proc.Send(buildRPCPayload("prompt", message, images))
+		return proc.SendWithModel(req.Model, buildRPCPayload("prompt", message, images))
 	}
 	if proc.IsStreaming() {
-		return proc.Send(buildRPCPayload("steer", message, images))
+		return proc.SendWithModel(req.Model, buildRPCPayload("steer", message, images))
 	}
-	return proc.Send(buildRPCPayload("prompt", message, images))
+	return proc.SendWithModel(req.Model, buildRPCPayload("prompt", message, images))
 }
 
 func buildRPCPayload(kind string, message string, images []ImageAttachment) map[string]any {
@@ -89,6 +90,25 @@ func buildRPCPayload(kind string, message string, images []ImageAttachment) map[
 		payload["images"] = images
 	}
 	return payload
+}
+
+func buildSetModelPayload(model string) (map[string]any, error) {
+	provider, modelID, err := splitModelRef(model)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"type": "set_model", "provider": provider, "modelId": modelID}, nil
+}
+
+func splitModelRef(model string) (string, string, error) {
+	model = strings.TrimSpace(model)
+	provider, modelID, ok := strings.Cut(model, "/")
+	provider = strings.TrimSpace(provider)
+	modelID = strings.TrimSpace(modelID)
+	if !ok || provider == "" || modelID == "" {
+		return "", "", fmt.Errorf("invalid model %q; expected provider/model", model)
+	}
+	return provider, modelID, nil
 }
 
 func (l *Local) AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo, error) {
@@ -215,7 +235,7 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 		return nil, false, err
 	}
 	now := time.Now()
-	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, startedAt: now, lastUsed: now}
+	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, startedAt: now, lastUsed: now, currentModel: req.Model}
 	l.mu.Lock()
 	l.procs[req.SessionID] = proc
 	l.mu.Unlock()
@@ -638,6 +658,37 @@ func (l *Local) idleKill(proc *LocalProcess) {
 func (p *LocalProcess) Send(payload map[string]any) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := p.writePayloadLocked(payload); err != nil {
+		return err
+	}
+	p.streaming = true
+	p.lastUsed = time.Now()
+	return nil
+}
+
+func (p *LocalProcess) SendWithModel(model string, payload map[string]any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if strings.TrimSpace(model) != "" && model != p.currentModel {
+		setModelPayload, err := buildSetModelPayload(model)
+		if err != nil {
+			return err
+		}
+		if err := p.writePayloadLocked(setModelPayload); err != nil {
+			return err
+		}
+		p.currentModel = model
+		p.lastUsed = time.Now()
+	}
+	if err := p.writePayloadLocked(payload); err != nil {
+		return err
+	}
+	p.streaming = true
+	p.lastUsed = time.Now()
+	return nil
+}
+
+func (p *LocalProcess) writePayloadLocked(payload map[string]any) error {
 	if p.stdin == nil {
 		return errors.New("process stdin is closed")
 	}
@@ -648,8 +699,6 @@ func (p *LocalProcess) Send(payload map[string]any) error {
 	if _, err := p.stdin.Write(append(data, '\n')); err != nil {
 		return err
 	}
-	p.streaming = true
-	p.lastUsed = time.Now()
 	return nil
 }
 

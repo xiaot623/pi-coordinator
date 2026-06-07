@@ -66,7 +66,7 @@ func (d *Docker) Prompt(ctx context.Context, req StartRequest, message string, i
 	if err != nil {
 		return err
 	}
-	return proc.Send(buildRPCPayload("prompt", message, images))
+	return proc.SendWithModel(req.Model, buildRPCPayload("prompt", message, images))
 }
 
 func (d *Docker) Steer(ctx context.Context, req StartRequest, message string, images []ImageAttachment) error {
@@ -75,12 +75,12 @@ func (d *Docker) Steer(ctx context.Context, req StartRequest, message string, im
 		return err
 	}
 	if fresh {
-		return proc.Send(buildRPCPayload("prompt", message, images))
+		return proc.SendWithModel(req.Model, buildRPCPayload("prompt", message, images))
 	}
 	if proc.IsStreaming() {
-		return proc.Send(buildRPCPayload("steer", message, images))
+		return proc.SendWithModel(req.Model, buildRPCPayload("steer", message, images))
 	}
-	return proc.Send(buildRPCPayload("prompt", message, images))
+	return proc.SendWithModel(req.Model, buildRPCPayload("prompt", message, images))
 }
 
 func (d *Docker) AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo, error) {
@@ -185,7 +185,7 @@ func (d *Docker) ensure(ctx context.Context, req StartRequest) (*LocalProcess, b
 		return nil, false, err
 	}
 	now := time.Now()
-	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, startedAt: now, lastUsed: now}
+	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, startedAt: now, lastUsed: now, currentModel: req.Model}
 	d.mu.Lock()
 	d.procs[req.SessionID] = proc
 	d.mu.Unlock()
