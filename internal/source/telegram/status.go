@@ -169,7 +169,7 @@ func activeSessionDetailKeyboard(b *Bot, item app.ActiveSession, page int) inlin
 	var rows [][]inlineKeyboardButton
 	var row []inlineKeyboardButton
 	if item.Session.TopicID != 0 {
-		row = append(row, inlineKeyboardButton{Text: "Follow", URL: topicURL(b.app.Config().Telegram.GroupChatID, item.Session.TopicID)})
+		row = append(row, inlineKeyboardButton{Text: "💬 Follow", URL: topicURL(b.app.Config().Telegram.GroupChatID, item.Session.TopicID)})
 	}
 	row = append(row, inlineKeyboardButton{Text: "Stop", CallbackData: "status:stop:" + item.Process.SessionID + ":" + strconv.Itoa(page)})
 	rows = append(rows, row)

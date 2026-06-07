@@ -343,12 +343,25 @@ func taskKeyboard(workspaceID int64, pinned bool) inlineKeyboardMarkup {
 	}}}
 }
 
-func createdTopicKeyboard(workspaceID int64, sessionID string, pinned bool, groupChatID int64, topicID int, gitWorkspace bool) inlineKeyboardMarkup {
+func startedTaskKeyboard(workspaceID int64, pinned bool, groupChatID int64, topicID int) inlineKeyboardMarkup {
 	pinLabel := "📌 Pin"
 	if pinned {
 		pinLabel = "📍 Unpin"
 	}
 	id := strconv.FormatInt(workspaceID, 10)
+	row := []inlineKeyboardButton{}
+	if topicID != 0 {
+		row = append(row, inlineKeyboardButton{Text: "💬 Follow", URL: topicURL(groupChatID, topicID)})
+	}
+	row = append(row,
+		inlineKeyboardButton{Text: "🆕 New", CallbackData: "new:" + id},
+		inlineKeyboardButton{Text: "📋 Sessions", CallbackData: "sessions:" + id},
+		inlineKeyboardButton{Text: pinLabel, CallbackData: "pin:" + id},
+	)
+	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{row}}
+}
+
+func createdTopicKeyboard(sessionID string, gitWorkspace bool) inlineKeyboardMarkup {
 	runRow := []inlineKeyboardButton{
 		{Text: "Local", CallbackData: "runlocal:" + sessionID},
 	}
@@ -358,15 +371,7 @@ func createdTopicKeyboard(workspaceID int64, sessionID string, pinned bool, grou
 			inlineKeyboardButton{Text: "Docker", CallbackData: "rundocker:" + sessionID},
 		)
 	}
-	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
-		runRow,
-		{
-			{Text: "Follow up", URL: topicURL(groupChatID, topicID)},
-			{Text: "🆕 New", CallbackData: "new:" + id},
-			{Text: "📋 Sessions", CallbackData: "sessions:" + id},
-			{Text: pinLabel, CallbackData: "pin:" + id},
-		},
-	}}
+	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{runRow}}
 }
 
 func topicURL(groupChatID int64, topicID int) string {

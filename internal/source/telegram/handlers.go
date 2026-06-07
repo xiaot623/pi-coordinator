@@ -946,7 +946,7 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 	if gitWorkspace && b.app.HasDirtyChanges(ctx, ws) {
 		text += "\n\nWorktree and Docker will start from the current HEAD and will not include uncommitted changes in the original workspace."
 	}
-	b.send(chatID, text, createdTopicKeyboard(workspaceID, sess.ID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, topicID, gitWorkspace))
+	b.send(chatID, text, createdTopicKeyboard(sess.ID, gitWorkspace))
 }
 
 func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string) {
@@ -1011,7 +1011,7 @@ func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string
 	if prepared.WorktreePath != "" {
 		text += "\nWorktree: " + prepared.WorktreePath
 	}
-	b.send(q.Message.Chat.ID, text, taskKeyboard(ws.ID, b.pinned(q.From.ID) == ws.Path))
+	b.send(q.Message.Chat.ID, text, startedTaskKeyboard(ws.ID, b.pinned(q.From.ID) == ws.Path, b.app.Config().Telegram.GroupChatID, sess.TopicID))
 }
 
 func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID, prompt string, images []runner.ImageAttachment) {
