@@ -103,7 +103,7 @@ func handleAddCmd(ctx context.Context, b *Bot, update Update) {
 func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 	prompt := strings.TrimSpace(update.Message.CommandArguments())
 	if path := b.pinned(update.Message.From.ID); path != "" {
-		ws, err := b.app.Store().GetWorkspaceByPath(ctx, path)
+		ws, err := b.app.GetSelectableWorkspaceByPath(ctx, path)
 		if err != nil {
 			b.send(update.Message.Chat.ID, "Pinned workspace is unavailable: "+err.Error(), nil)
 			return
@@ -289,7 +289,7 @@ func modelPendingForScope(ctx context.Context, b *Bot, userID int64, msg *Messag
 	}
 	if scope == "workspace" {
 		if path := b.pinned(userID); path != "" {
-			if ws, err := b.app.Store().GetWorkspaceByPath(ctx, path); err == nil {
+			if ws, err := b.app.GetSelectableWorkspaceByPath(ctx, path); err == nil {
 				p.WorkspaceID = ws.ID
 			}
 		}
@@ -370,7 +370,7 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 	}
 
 	if path := b.pinned(userID); path != "" {
-		ws, err := b.app.Store().GetWorkspaceByPath(ctx, path)
+		ws, err := b.app.GetSelectableWorkspaceByPath(ctx, path)
 		if err != nil {
 			b.send(chatID, "Pinned workspace is unavailable: "+err.Error(), nil)
 			return
@@ -397,7 +397,7 @@ func promptForPendingInput(b *Bot, chat Chat, userID int64, pending PendingState
 }
 
 func promptForNewTaskInput(ctx context.Context, b *Bot, chat Chat, userID, workspaceID int64) {
-	ws, err := b.app.Store().GetWorkspace(ctx, workspaceID)
+	ws, err := b.app.GetSelectableWorkspace(ctx, workspaceID)
 	if err != nil {
 		b.send(chat.ID, "Failed to read workspace: "+err.Error(), nil)
 		return
@@ -686,7 +686,7 @@ func handleApplySessionModel(ctx context.Context, b *Bot, update Update) {
 // -- Callbacks (Workspace & Sessions) --
 
 func applyWorkspaceModel(ctx context.Context, b *Bot, userID, chatID int64, messageID int, workspaceID int64, modelID string) {
-	ws, err := b.app.Store().GetWorkspace(ctx, workspaceID)
+	ws, err := b.app.GetSelectableWorkspace(ctx, workspaceID)
 	if err != nil {
 		b.editMessageText(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
 		return
@@ -716,7 +716,7 @@ func applySessionModel(ctx context.Context, b *Bot, userID, chatID int64, messag
 func handleWorkspaceOpen(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "wsopen:"), 10, 64)
-	ws, err := b.app.Store().GetWorkspace(ctx, id)
+	ws, err := b.app.GetSelectableWorkspace(ctx, id)
 	if err != nil {
 		b.answerCallback(q.ID, "Open failed")
 		b.send(q.Message.Chat.ID, "Failed to read workspace: "+err.Error(), nil)
@@ -737,7 +737,7 @@ func handleWorkspaceOpen(ctx context.Context, b *Bot, update Update) {
 func handleWorkspaceModel(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "wsmodel:"), 10, 64)
-	if _, err := b.app.Store().GetWorkspace(ctx, id); err != nil {
+	if _, err := b.app.GetSelectableWorkspace(ctx, id); err != nil {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
@@ -748,7 +748,7 @@ func handleWorkspaceModel(ctx context.Context, b *Bot, update Update) {
 func handleWorkspacePin(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "wspin:"), 10, 64)
-	ws, err := b.app.Store().GetWorkspace(ctx, id)
+	ws, err := b.app.GetSelectableWorkspace(ctx, id)
 	if err != nil {
 		b.answerCallback(q.ID, "Pin failed")
 		b.send(q.Message.Chat.ID, "Pin failed: "+err.Error(), nil)
@@ -798,7 +798,7 @@ func handleChooseWorkspaceForNewTask(ctx context.Context, b *Bot, update Update)
 func handleChooseWorkspaceForPin(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "pinws:"), 10, 64)
-	ws, err := b.app.Store().GetWorkspace(ctx, id)
+	ws, err := b.app.GetSelectableWorkspace(ctx, id)
 	if err != nil {
 		b.send(q.Message.Chat.ID, "Pin failed: "+err.Error(), nil)
 		return
@@ -811,6 +811,10 @@ func handleAddConfirm(ctx context.Context, b *Bot, update Update) {
 	p, ok := b.getPending(q.From.ID)
 	if !ok || p.Kind != "add_workspace" || p.BrowsePath == "" {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace add expired. Send /add again.", nil)
+		return
+	}
+	if b.app.IsManagedWorktreePath(p.BrowsePath) {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Cannot add a pi-managed worktree as a workspace.", nil)
 		return
 	}
 	ws, created, err := b.app.Store().UpsertWorkspace(ctx, p.BrowsePath, filepath.Base(p.BrowsePath))
@@ -934,7 +938,7 @@ func handleNewCallback(ctx context.Context, b *Bot, update Update) {
 func handlePinCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "pin:"), 10, 64)
-	ws, err := b.app.Store().GetWorkspace(ctx, id)
+	ws, err := b.app.GetSelectableWorkspace(ctx, id)
 	if err != nil {
 		b.send(q.Message.Chat.ID, "Pin failed: "+err.Error(), nil)
 		return
@@ -955,18 +959,18 @@ func pinWorkspace(ctx context.Context, b *Bot, userID, chatID int64, topicID int
 
 func findWorkspaceForPin(ctx context.Context, b *Bot, query string) (store.Workspace, error) {
 	if id, err := strconv.ParseInt(query, 10, 64); err == nil {
-		if ws, err := b.app.Store().GetWorkspace(ctx, id); err == nil {
+		if ws, err := b.app.GetSelectableWorkspace(ctx, id); err == nil {
 			return ws, nil
 		}
 	}
-	if ws, err := b.app.Store().GetWorkspaceByPath(ctx, query); err == nil {
+	if ws, err := b.app.GetSelectableWorkspaceByPath(ctx, query); err == nil {
 		return ws, nil
 	}
-	total, err := b.app.Store().CountWorkspaces(ctx)
+	total, err := b.app.CountSelectableWorkspaces(ctx)
 	if err != nil {
 		return store.Workspace{}, err
 	}
-	workspaces, err := b.app.Store().ListWorkspaces(ctx, total, 0)
+	workspaces, err := b.app.ListSelectableWorkspaces(ctx, total, 0)
 	if err != nil {
 		return store.Workspace{}, err
 	}
@@ -1009,7 +1013,7 @@ func appendImageContext(prompt string, images []runner.ImageAttachment) string {
 
 func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspaceID int64, prompt string, images []runner.ImageAttachment) {
 	chatID := chat.ID
-	ws, err := b.app.Store().GetWorkspace(ctx, workspaceID)
+	ws, err := b.app.GetSelectableWorkspace(ctx, workspaceID)
 	if err != nil {
 		b.send(chatID, "Failed to read workspace: "+err.Error(), nil)
 		return

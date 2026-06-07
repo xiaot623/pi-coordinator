@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -351,9 +352,40 @@ func (s *Store) ListSessions(ctx context.Context, workspaceID int64, limit, offs
 	return out, rows.Err()
 }
 
+func (s *Store) ListSessionsByWorkspaceIDs(ctx context.Context, workspaceIDs []int64, limit, offset int) ([]Session, error) {
+	if len(workspaceIDs) == 0 {
+		return nil, nil
+	}
+	query, args := sessionByWorkspaceIDsQuery(sessionSelectSQL(), workspaceIDs, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		sess, err := scanSessionRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) CountSessions(ctx context.Context, workspaceID int64) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE workspace_id = ?`, workspaceID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) CountSessionsByWorkspaceIDs(ctx context.Context, workspaceIDs []int64) (int, error) {
+	if len(workspaceIDs) == 0 {
+		return 0, nil
+	}
+	query, args := countSessionsByWorkspaceIDsQuery(workspaceIDs)
+	var count int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }
 
@@ -484,6 +516,28 @@ COALESCE(worktree_branch,''),
 COALESCE(base_commit,''),
 created_at,
 updated_at FROM sessions`
+}
+
+func sessionByWorkspaceIDsQuery(base string, workspaceIDs []int64, limit, offset int) (string, []any) {
+	placeholders := make([]string, len(workspaceIDs))
+	args := make([]any, 0, len(workspaceIDs)+2)
+	for i, id := range workspaceIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	query := base + ` WHERE workspace_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	return query, args
+}
+
+func countSessionsByWorkspaceIDsQuery(workspaceIDs []int64) (string, []any) {
+	placeholders := make([]string, len(workspaceIDs))
+	args := make([]any, 0, len(workspaceIDs))
+	for i, id := range workspaceIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	return `SELECT COUNT(*) FROM sessions WHERE workspace_id IN (` + strings.Join(placeholders, ",") + `)`, args
 }
 
 func IsNotFound(err error) bool {

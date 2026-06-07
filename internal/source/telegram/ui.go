@@ -24,7 +24,7 @@ const (
 // -- UI Formatting --
 
 func sendWorkspaces(ctx context.Context, b *Bot, chatID int64, messageID int, text, prefix string, page int) {
-	total, err := b.app.Store().CountWorkspaces(ctx)
+	total, err := b.app.CountSelectableWorkspaces(ctx)
 	if err != nil {
 		b.send(chatID, "Failed to read workspaces: "+err.Error(), nil)
 		return
@@ -34,7 +34,7 @@ func sendWorkspaces(ctx context.Context, b *Bot, chatID int64, messageID int, te
 		return
 	}
 	page = clampPage(page, total, workspacePageSize)
-	workspaces, err := b.app.Store().ListWorkspaces(ctx, workspacePageSize, page*workspacePageSize)
+	workspaces, err := b.app.ListSelectableWorkspaces(ctx, workspacePageSize, page*workspacePageSize)
 	if err != nil {
 		b.send(chatID, "Failed to read workspaces: "+err.Error(), nil)
 		return
@@ -52,13 +52,13 @@ func sendWorkspaces(ctx context.Context, b *Bot, chatID int64, messageID int, te
 }
 
 func sendSessions(ctx context.Context, b *Bot, chatID int64, messageID int, workspaceID int64, page int) {
-	total, err := b.app.Store().CountSessions(ctx, workspaceID)
+	total, err := b.app.CountWorkspaceSessions(ctx, workspaceID)
 	if err != nil {
 		b.send(chatID, "Failed to read sessions: "+err.Error(), nil)
 		return
 	}
 	page = clampPage(page, total, sessionPageSize)
-	sessions, err := b.app.Store().ListSessions(ctx, workspaceID, sessionPageSize, page*sessionPageSize)
+	sessions, err := b.app.ListWorkspaceSessions(ctx, workspaceID, sessionPageSize, page*sessionPageSize)
 	if err != nil {
 		b.send(chatID, "Failed to read sessions: "+err.Error(), nil)
 		return
@@ -199,13 +199,13 @@ func editProviderModels(ctx context.Context, b *Bot, chatID int64, messageID int
 }
 
 func editModelSessions(ctx context.Context, b *Bot, chatID int64, messageID int, workspaceID int64, page int) {
-	total, err := b.app.Store().CountSessions(ctx, workspaceID)
+	total, err := b.app.CountWorkspaceSessions(ctx, workspaceID)
 	if err != nil {
 		b.editMessageText(chatID, messageID, "Failed to read sessions: "+err.Error(), nil)
 		return
 	}
 	page = clampPage(page, total, sessionPageSize)
-	sessions, err := b.app.Store().ListSessions(ctx, workspaceID, sessionPageSize, page*sessionPageSize)
+	sessions, err := b.app.ListWorkspaceSessions(ctx, workspaceID, sessionPageSize, page*sessionPageSize)
 	if err != nil {
 		b.editMessageText(chatID, messageID, "Failed to read sessions: "+err.Error(), nil)
 		return

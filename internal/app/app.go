@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/config"
@@ -118,6 +120,143 @@ func (a *App) SessionDirs() []string {
 		filepath.Join(a.paths.DataDir, "sessions", "worktree"),
 		filepath.Join(a.paths.DataDir, "sessions", "docker"),
 	}
+}
+
+func (a *App) ManagedWorktreeRoot() string {
+	return filepath.Join(a.paths.DataDir, "worktrees")
+}
+
+func (a *App) IsManagedWorktreePath(path string) bool {
+	path = filepath.Clean(path)
+	root := filepath.Clean(a.ManagedWorktreeRoot())
+	if path == root {
+		return true
+	}
+	return len(path) > len(root) && path[:len(root)] == root && path[len(root)] == filepath.Separator
+}
+
+func (a *App) CountSelectableWorkspaces(ctx context.Context) (int, error) {
+	workspaces, err := a.selectableWorkspaces(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return len(workspaces), nil
+}
+
+func (a *App) ListSelectableWorkspaces(ctx context.Context, limit, offset int) ([]store.Workspace, error) {
+	workspaces, err := a.selectableWorkspaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return paginateWorkspaces(workspaces, limit, offset), nil
+}
+
+func (a *App) GetSelectableWorkspace(ctx context.Context, id int64) (store.Workspace, error) {
+	ws, err := a.store.GetWorkspace(ctx, id)
+	if err != nil {
+		return store.Workspace{}, err
+	}
+	if a.IsManagedWorktreePath(ws.Path) {
+		return store.Workspace{}, sql.ErrNoRows
+	}
+	return ws, nil
+}
+
+func (a *App) GetSelectableWorkspaceByPath(ctx context.Context, path string) (store.Workspace, error) {
+	ws, err := a.store.GetWorkspaceByPath(ctx, path)
+	if err != nil {
+		return store.Workspace{}, err
+	}
+	if a.IsManagedWorktreePath(ws.Path) {
+		return store.Workspace{}, sql.ErrNoRows
+	}
+	return ws, nil
+}
+
+func (a *App) CountWorkspaceSessions(ctx context.Context, workspaceID int64) (int, error) {
+	workspaceIDs, err := a.associatedWorkspaceIDs(ctx, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return a.store.CountSessionsByWorkspaceIDs(ctx, workspaceIDs)
+}
+
+func (a *App) ListWorkspaceSessions(ctx context.Context, workspaceID int64, limit, offset int) ([]store.Session, error) {
+	workspaceIDs, err := a.associatedWorkspaceIDs(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return a.store.ListSessionsByWorkspaceIDs(ctx, workspaceIDs, limit, offset)
+}
+
+func (a *App) associatedWorkspaceIDs(ctx context.Context, workspaceID int64) ([]int64, error) {
+	selected, err := a.GetSelectableWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	workspaces, err := a.allWorkspaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	selectedBase := filepath.Base(filepath.Clean(selected.Path))
+	prefix := selectedBase + "_"
+	ids := []int64{selected.ID}
+	seen := map[int64]bool{selected.ID: true}
+	for _, ws := range workspaces {
+		if seen[ws.ID] || !a.IsManagedWorktreePath(ws.Path) {
+			continue
+		}
+		hiddenBase := filepath.Base(filepath.Clean(ws.Path))
+		if !strings.HasPrefix(hiddenBase, prefix) {
+			continue
+		}
+		ids = append(ids, ws.ID)
+		seen[ws.ID] = true
+	}
+	return ids, nil
+}
+
+func (a *App) selectableWorkspaces(ctx context.Context) ([]store.Workspace, error) {
+	workspaces, err := a.allWorkspaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Workspace, 0, len(workspaces))
+	for _, ws := range workspaces {
+		if a.IsManagedWorktreePath(ws.Path) {
+			continue
+		}
+		out = append(out, ws)
+	}
+	return out, nil
+}
+
+func (a *App) allWorkspaces(ctx context.Context) ([]store.Workspace, error) {
+	total, err := a.store.CountWorkspaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if total == 0 {
+		return nil, nil
+	}
+	return a.store.ListWorkspaces(ctx, total, 0)
+}
+
+func paginateWorkspaces(workspaces []store.Workspace, limit, offset int) []store.Workspace {
+	if offset >= len(workspaces) {
+		return nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		return workspaces[offset:]
+	}
+	end := offset + limit
+	if end > len(workspaces) {
+		end = len(workspaces)
+	}
+	return workspaces[offset:end]
 }
 
 func (a *App) PromptSession(ctx context.Context, sess store.Session, ws store.Workspace, runnerType string, req runner.StartRequest, message string, images []runner.ImageAttachment) (store.Session, error) {

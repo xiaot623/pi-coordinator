@@ -40,6 +40,18 @@ func HasDirtyChanges(ctx context.Context, workspace string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
+func OriginalWorkspace(ctx context.Context, worktreePath string) (string, error) {
+	commonDir, err := gitOutput(ctx, worktreePath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	commonDir = filepath.Clean(strings.TrimSpace(commonDir))
+	if filepath.Base(commonDir) != ".git" {
+		return "", fmt.Errorf("resolve original workspace: unexpected git common dir %q", commonDir)
+	}
+	return filepath.Dir(commonDir), nil
+}
+
 func (m *WorktreeManager) Ensure(ctx context.Context, sessionID, workspace string, existing WorktreeMeta) (WorktreeMeta, bool, error) {
 	if existing.Path != "" {
 		if st, err := os.Stat(existing.Path); err == nil && st.IsDir() {
