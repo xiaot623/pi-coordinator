@@ -7,6 +7,7 @@ runner:
   idle_timeout: 5m
   session_dir: "~/.pi/agent/sessions"
   binary: "pi"
+  docker_image: "pi-agent:latest"
   plugins:
     - "@hahahhh/pi-trace@next"
   # 0 checks on every Pi startup; negative values disable update checks.

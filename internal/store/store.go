@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -26,16 +27,21 @@ type Workspace struct {
 }
 
 type Session struct {
-	ID            string
-	WorkspaceID   int64
-	FilePath      string
-	Name          string
-	Title         string
-	Model         string
-	TopicID       int
-	GoalMessageID int
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                    string
+	WorkspaceID           int64
+	FilePath              string
+	Name                  string
+	Title                 string
+	Model                 string
+	TopicID               int
+	GoalMessageID         int
+	RunnerType            string
+	OriginalWorkspacePath string
+	WorktreePath          string
+	WorktreeBranch        string
+	BaseCommit            string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 func Open(path string) (*Store, error) {
@@ -79,6 +85,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     topic_id INTEGER,
     goal_message_id INTEGER,
+    runner_type TEXT,
+    original_workspace_path TEXT,
+    worktree_path TEXT,
+    worktree_branch TEXT,
+    base_commit TEXT,
     created_at DATETIME,
     updated_at DATETIME
 );
@@ -93,6 +104,20 @@ CREATE INDEX IF NOT EXISTS idx_sessions_topic_id ON sessions(topic_id);
 	}
 	if err := s.ensureColumn(ctx, "workspaces", "latest_session_at", `ALTER TABLE workspaces ADD COLUMN latest_session_at DATETIME`); err != nil {
 		return err
+	}
+	for _, col := range []struct {
+		name string
+		stmt string
+	}{
+		{"runner_type", `ALTER TABLE sessions ADD COLUMN runner_type TEXT`},
+		{"original_workspace_path", `ALTER TABLE sessions ADD COLUMN original_workspace_path TEXT`},
+		{"worktree_path", `ALTER TABLE sessions ADD COLUMN worktree_path TEXT`},
+		{"worktree_branch", `ALTER TABLE sessions ADD COLUMN worktree_branch TEXT`},
+		{"base_commit", `ALTER TABLE sessions ADD COLUMN base_commit TEXT`},
+	} {
+		if err := s.ensureColumn(ctx, "sessions", col.name, col.stmt); err != nil {
+			return err
+		}
 	}
 	return s.recomputeAllWorkspaceStats(ctx)
 }
@@ -248,8 +273,69 @@ func (s *Store) CreatePlaceholderSession(ctx context.Context, workspaceID int64,
 	return sess, nil
 }
 
+func (s *Store) SetSessionRunnerType(ctx context.Context, sessionID, runnerType, originalWorkspacePath string) error {
+	if runnerType == "" {
+		runnerType = "local"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(runner_type,'') FROM sessions WHERE id = ?`, sessionID).Scan(&existing)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if existing != "" && existing != runnerType {
+		_ = tx.Rollback()
+		return fmt.Errorf("session %s already uses runner %s", sessionID, existing)
+	}
+	now := time.Now().UTC()
+	_, err = tx.ExecContext(ctx, `
+UPDATE sessions
+SET runner_type = ?,
+    original_workspace_path = COALESCE(NULLIF(original_workspace_path, ''), ?),
+    updated_at = ?
+WHERE id = ?
+`, runnerType, originalWorkspacePath, now, sessionID)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := s.recomputeWorkspaceStatsForSessionTx(ctx, tx, sessionID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SetSessionWorktree(ctx context.Context, sessionID, worktreePath, worktreeBranch, baseCommit string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `
+UPDATE sessions
+SET worktree_path = ?,
+    worktree_branch = ?,
+    base_commit = ?,
+    updated_at = ?
+WHERE id = ?
+`, worktreePath, worktreeBranch, baseCommit, now, sessionID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := s.recomputeWorkspaceStatsForSessionTx(ctx, tx, sessionID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ListSessions(ctx context.Context, workspaceID int64, limit, offset int) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, workspace_id, file_path, COALESCE(name,''), COALESCE(title,''), COALESCE(model,''), COALESCE(topic_id,0), COALESCE(goal_message_id,0), created_at, updated_at FROM sessions WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`, workspaceID, limit, offset)
+	rows, err := s.db.QueryContext(ctx, sessionSelectSQL()+` WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`, workspaceID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -272,12 +358,12 @@ func (s *Store) CountSessions(ctx context.Context, workspaceID int64) (int, erro
 }
 
 func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, workspace_id, file_path, COALESCE(name,''), COALESCE(title,''), COALESCE(model,''), COALESCE(topic_id,0), COALESCE(goal_message_id,0), created_at, updated_at FROM sessions WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, sessionSelectSQL()+` WHERE id = ?`, id)
 	return scanSession(row)
 }
 
 func (s *Store) GetSessionByTopic(ctx context.Context, topicID int) (Session, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, workspace_id, file_path, COALESCE(name,''), COALESCE(title,''), COALESCE(model,''), COALESCE(topic_id,0), COALESCE(goal_message_id,0), created_at, updated_at FROM sessions WHERE topic_id = ?`, topicID)
+	row := s.db.QueryRowContext(ctx, sessionSelectSQL()+` WHERE topic_id = ?`, topicID)
 	return scanSession(row)
 }
 
@@ -362,8 +448,42 @@ func scanSession(row interface{ Scan(dest ...any) error }) (Session, error) {
 
 func scanSessionRows(row interface{ Scan(dest ...any) error }) (Session, error) {
 	var sess Session
-	err := row.Scan(&sess.ID, &sess.WorkspaceID, &sess.FilePath, &sess.Name, &sess.Title, &sess.Model, &sess.TopicID, &sess.GoalMessageID, &sess.CreatedAt, &sess.UpdatedAt)
+	err := row.Scan(
+		&sess.ID,
+		&sess.WorkspaceID,
+		&sess.FilePath,
+		&sess.Name,
+		&sess.Title,
+		&sess.Model,
+		&sess.TopicID,
+		&sess.GoalMessageID,
+		&sess.RunnerType,
+		&sess.OriginalWorkspacePath,
+		&sess.WorktreePath,
+		&sess.WorktreeBranch,
+		&sess.BaseCommit,
+		&sess.CreatedAt,
+		&sess.UpdatedAt,
+	)
 	return sess, err
+}
+
+func sessionSelectSQL() string {
+	return `SELECT id,
+workspace_id,
+file_path,
+COALESCE(name,''),
+COALESCE(title,''),
+COALESCE(model,''),
+COALESCE(topic_id,0),
+COALESCE(goal_message_id,0),
+COALESCE(runner_type,''),
+COALESCE(original_workspace_path,''),
+COALESCE(worktree_path,''),
+COALESCE(worktree_branch,''),
+COALESCE(base_commit,''),
+created_at,
+updated_at FROM sessions`
 }
 
 func IsNotFound(err error) bool {

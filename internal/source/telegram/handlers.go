@@ -49,6 +49,9 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("pinws:", handleChooseWorkspaceForPin)
 
 	b.router.Callback("ns:", handleNewSessionCallback)
+	b.router.Callback("runlocal:", handleRunLocal)
+	b.router.Callback("runworktree:", handleRunWorktree)
+	b.router.Callback("rundocker:", handleRunDocker)
 	b.router.Callback("s:", handleSessionCallback)
 	b.router.Callback("sp:", handleSessionPage)
 	b.router.Callback("sessions:", handleSessionsList)
@@ -223,7 +226,6 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 	req := runner.StartRequest{
 		SessionID: sess.ID,
 		Title:     displaySession(sess),
-		Workspace: ws.Path,
 		TopicID:   sess.TopicID,
 		Model:     b.app.ResolveModel(sess, ws),
 		Existing:  true,
@@ -238,7 +240,11 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 	}
 
 	runnerPrompt := appendImageContext(text, images)
-	if err := b.app.Runner().Steer(ctx, req, runnerPrompt, images); err != nil {
+	if sess.RunnerType == "" && sess.FilePath == "" && sess.WorktreePath == "" {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Choose Run Local, Run Worktree, or Run Docker before sending follow-ups.", nil)
+		return
+	}
+	if err := b.app.SteerSession(ctx, sess, ws, req, runnerPrompt, images); err != nil {
 		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to send to pi: "+err.Error(), nil)
 		return
 	}
@@ -513,6 +519,18 @@ func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {
 	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
 }
 
+func handleRunLocal(ctx context.Context, b *Bot, update Update) {
+	handleRunMode(ctx, b, update, "local")
+}
+
+func handleRunWorktree(ctx context.Context, b *Bot, update Update) {
+	handleRunMode(ctx, b, update, "worktree")
+}
+
+func handleRunDocker(ctx context.Context, b *Bot, update Update) {
+	handleRunMode(ctx, b, update, "docker")
+}
+
 func handleSessionCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	sid := strings.TrimPrefix(q.Data, "s:")
@@ -625,12 +643,6 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 		return
 	}
 
-	rememberTraceRetry(b, userID, "retry_new_task", chat, workspaceID, "", prompt, images)
-	traceBot, err := b.ensureTraceBot(ctx, genericRole, chatID)
-	if err != nil {
-		return
-	}
-
 	title := topicTitle(prompt)
 	topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, title)
 	if err != nil {
@@ -650,25 +662,86 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 	}
 	_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
 
+	b.setPending(userID, PendingState{
+		Kind:         "await_run_mode",
+		WorkspaceID:  workspaceID,
+		SessionID:    sess.ID,
+		Prompt:       prompt,
+		ImagesJSON:   encodeImagesJSON(images),
+		TaskChatID:   chat.ID,
+		TaskChatType: chat.Type,
+	})
+	gitWorkspace := b.app.IsGitWorkspace(ctx, ws)
+	text := fmt.Sprintf("Created topic: %s\nChoose how to run pi.", title)
+	if gitWorkspace && b.app.HasDirtyChanges(ctx, ws) {
+		text += "\n\nWorktree and Docker will start from the current HEAD and will not include uncommitted changes in the original workspace."
+	}
+	b.send(chatID, text, createdTopicKeyboard(workspaceID, sess.ID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, topicID, gitWorkspace))
+}
+
+func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string) {
+	q := update.CallbackQuery
+	sessionID := strings.TrimPrefix(q.Data, "run"+runnerType+":")
+	if runnerType == "local" {
+		sessionID = strings.TrimPrefix(q.Data, "runlocal:")
+	}
+	if runnerType == "worktree" {
+		sessionID = strings.TrimPrefix(q.Data, "runworktree:")
+	}
+	if runnerType == "docker" {
+		sessionID = strings.TrimPrefix(q.Data, "rundocker:")
+	}
+	p, ok := b.getPending(q.From.ID)
+	if !ok || p.Kind != "await_run_mode" || p.SessionID != sessionID {
+		b.send(q.Message.Chat.ID, "Run request expired. Send the task again with /new.", nil)
+		return
+	}
+	sess, err := b.app.Store().GetSession(ctx, sessionID)
+	if err != nil {
+		b.send(q.Message.Chat.ID, "Failed to read session: "+err.Error(), nil)
+		return
+	}
+	ws, err := b.app.Store().GetWorkspace(ctx, sess.WorkspaceID)
+	if err != nil {
+		b.send(q.Message.Chat.ID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	if runnerType != "local" && !b.app.IsGitWorkspace(ctx, ws) {
+		b.send(q.Message.Chat.ID, "Worktree and Docker modes require a Git workspace with at least one commit.", nil)
+		return
+	}
+	chat := Chat{ID: p.TaskChatID, Type: p.TaskChatType}
+	if chat.ID == 0 {
+		chat = q.Message.Chat
+	}
+	rememberTraceRetry(b, q.From.ID, "retry_new_task", chat, ws.ID, sess.ID, p.Prompt, decodeImagesJSON(p.ImagesJSON))
+	traceBot, err := b.ensureTraceBot(ctx, genericRole, q.Message.Chat.ID)
+	if err != nil {
+		return
+	}
 	req := runner.StartRequest{
 		SessionID: sess.ID,
-		Title:     title,
-		Workspace: ws.Path,
-		TopicID:   topicID,
+		Title:     displaySession(sess),
+		TopicID:   sess.TopicID,
 		Model:     b.app.ResolveModel(sess, ws),
 		Role:      genericRole,
 	}
 	req.TraceTelegramToken = traceBot.Token
 	req.TraceTelegramChatIDs = traceBot.ChatIDs
 
-	runnerPrompt := appendImageContext(prompt, images)
-	if err := b.app.Runner().Prompt(ctx, req, runnerPrompt, images); err != nil {
-		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
+	images := decodeImagesJSON(p.ImagesJSON)
+	runnerPrompt := appendImageContext(p.Prompt, images)
+	prepared, err := b.app.PromptSession(ctx, sess, ws, runnerType, req, runnerPrompt, images)
+	if err != nil {
+		b.send(q.Message.Chat.ID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}
-	clearTraceRetry(b, userID)
-
-	b.send(chatID, fmt.Sprintf("Created topic: %s", title), createdTopicKeyboard(workspaceID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, topicID))
+	clearTraceRetry(b, q.From.ID)
+	text := "Started pi in " + runnerType + " mode."
+	if prepared.WorktreePath != "" {
+		text += "\nWorktree: " + prepared.WorktreePath
+	}
+	b.send(q.Message.Chat.ID, text, taskKeyboard(ws.ID, b.pinned(q.From.ID) == ws.Path))
 }
 
 func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID, prompt string, images []runner.ImageAttachment) {
@@ -705,7 +778,6 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 	req := runner.StartRequest{
 		SessionID: sess.ID,
 		Title:     displaySession(sess),
-		Workspace: ws.Path,
 		TopicID:   sess.TopicID,
 		Model:     b.app.ResolveModel(sess, ws),
 		Existing:  true,
@@ -715,7 +787,7 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 	req.TraceTelegramChatIDs = traceBot.ChatIDs
 
 	runnerPrompt := appendImageContext(prompt, images)
-	if err := b.app.Runner().Prompt(ctx, req, runnerPrompt, images); err != nil {
+	if _, err := b.app.PromptSession(ctx, sess, ws, sess.RunnerType, req, runnerPrompt, images); err != nil {
 		b.send(chatID, "Failed to start pi: "+err.Error(), nil)
 		return
 	}

@@ -21,6 +21,12 @@ type Discovered struct {
 
 func Scan(ctx context.Context, root string) ([]Discovered, error) {
 	var out []Discovered
+	if _, err := os.Stat(root); err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -44,6 +50,18 @@ func Scan(ctx context.Context, root string) ([]Discovered, error) {
 		return nil
 	})
 	return out, err
+}
+
+func ScanMany(ctx context.Context, roots []string) ([]Discovered, error) {
+	var out []Discovered
+	for _, root := range roots {
+		items, err := Scan(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+	}
+	return out, nil
 }
 
 func isIgnoredDir(name string) bool {

@@ -30,6 +30,7 @@ type Config struct {
 		IdleTimeout                 Duration `yaml:"idle_timeout"`
 		SessionDir                  string   `yaml:"session_dir"`
 		Binary                      string   `yaml:"binary"`
+		DockerImage                 string   `yaml:"docker_image"`
 		Plugins                     []string `yaml:"plugins"`
 		PluginUpdateIntervalMinutes int      `yaml:"plugin_update_interval_minutes"`
 	} `yaml:"runner"`
@@ -82,6 +83,7 @@ func Load() (Config, Paths, error) {
 	cfg.Runner.IdleTimeout.Duration = 5 * time.Minute
 	cfg.Runner.SessionDir = "~/.pi/agent/sessions"
 	cfg.Runner.Binary = "pi"
+	cfg.Runner.DockerImage = "pi-agent:latest"
 	cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
 	cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -91,6 +93,9 @@ func Load() (Config, Paths, error) {
 	cfg.Runner.Plugins = expandPaths(cfg.Runner.Plugins)
 	if cfg.Runner.Binary == "" {
 		cfg.Runner.Binary = "pi"
+	}
+	if cfg.Runner.DockerImage == "" {
+		cfg.Runner.DockerImage = "pi-agent:latest"
 	}
 	if cfg.Telegram.BotToken == "" || cfg.Telegram.GroupChatID == 0 || len(cfg.Telegram.AllowedUsers) == 0 {
 		return Config{}, paths, fmt.Errorf("telegram.bot_token, telegram.group_chat_id, and telegram.allowed_users are required in %s", paths.ConfigPath)
@@ -179,6 +184,7 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					cfg.Runner.IdleTimeout.Duration = 5 * time.Minute
 					cfg.Runner.SessionDir = "~/.pi/agent/sessions"
 					cfg.Runner.Binary = "pi"
+					cfg.Runner.DockerImage = "pi-agent:latest"
 					cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
 					cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 					if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -189,6 +195,9 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					cfg.Runner.Plugins = expandPaths(cfg.Runner.Plugins)
 					if cfg.Runner.Binary == "" {
 						cfg.Runner.Binary = "pi"
+					}
+					if cfg.Runner.DockerImage == "" {
+						cfg.Runner.DockerImage = "pi-agent:latest"
 					}
 					onChange(cfg, nil)
 				}

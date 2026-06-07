@@ -123,6 +123,11 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 	if _, err := l.AvailableModels(ctx, false); err != nil && l.opts.Logger != nil {
 		l.opts.Logger.Warn("cache pi models failed", "error", err)
 	}
+	if l.opts.SessionDir != "" {
+		if err := os.MkdirAll(l.opts.SessionDir, 0o755); err != nil {
+			return nil, false, err
+		}
+	}
 
 	args, err := l.baseArgs(ctx, "--mode", "rpc", "--session-dir", l.opts.SessionDir)
 	if err != nil {
