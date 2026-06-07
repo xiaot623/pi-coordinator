@@ -257,6 +257,60 @@ func handleUnpin(ctx context.Context, b *Bot, update Update) {
 	b.send(update.Message.Chat.ID, "Workspace pin cleared.", nil)
 }
 
+func modelCommandTopicID(msg *Message) int {
+	if msg == nil || msg.Chat.IsPrivate() {
+		return 0
+	}
+	return msg.MessageThreadID
+}
+
+func currentTopicSession(ctx context.Context, b *Bot, msg *Message) (store.Session, bool) {
+	if msg == nil || msg.Chat.ID != b.app.Config().Telegram.GroupChatID || msg.MessageThreadID == 0 || msg.MessageThreadID == generalTopicThreadID {
+		return store.Session{}, false
+	}
+	sess, err := b.app.Store().GetSessionByTopic(ctx, msg.MessageThreadID)
+	if err != nil {
+		return store.Session{}, false
+	}
+	return sess, true
+}
+
+func modelPendingForScope(ctx context.Context, b *Bot, userID int64, msg *Message, scope string) PendingState {
+	p := PendingState{Kind: "model", ModelScope: scope}
+	if sess, ok := currentTopicSession(ctx, b, msg); ok {
+		switch scope {
+		case "workspace":
+			p.WorkspaceID = sess.WorkspaceID
+		case "session":
+			p.WorkspaceID = sess.WorkspaceID
+			p.SessionID = sess.ID
+		}
+		return p
+	}
+	if scope == "workspace" {
+		if path := b.pinned(userID); path != "" {
+			if ws, err := b.app.Store().GetWorkspaceByPath(ctx, path); err == nil {
+				p.WorkspaceID = ws.ID
+			}
+		}
+	}
+	return p
+}
+
+func defaultModelPending(ctx context.Context, b *Bot, msg *Message) (PendingState, bool) {
+	if msg == nil || msg.From == nil {
+		return PendingState{}, false
+	}
+	if sess, ok := currentTopicSession(ctx, b, msg); ok {
+		return PendingState{Kind: "model", ModelScope: "session", WorkspaceID: sess.WorkspaceID, SessionID: sess.ID}, true
+	}
+	p := modelPendingForScope(ctx, b, msg.From.ID, msg, "workspace")
+	if p.WorkspaceID != 0 {
+		return p, true
+	}
+	return PendingState{}, false
+}
+
 func handleModelCmd(ctx context.Context, b *Bot, update Update) {
 	args := strings.TrimSpace(update.Message.CommandArguments())
 	refresh := args == "--refresh"
@@ -271,7 +325,19 @@ func handleModelCmd(ctx context.Context, b *Bot, update Update) {
 			return
 		}
 	}
-	b.send(update.Message.Chat.ID, modelScopeText(refresh), modelScopeKeyboard())
+	if p, ok := defaultModelPending(ctx, b, update.Message); ok {
+		b.setPending(update.Message.From.ID, p)
+		messageID, err := b.sendMessage(update.Message.Chat.ID, modelCommandTopicID(update.Message), "Loading models...", nil)
+		if err != nil {
+			b.app.Logger().Warn("telegram send failed", "error", err)
+			return
+		}
+		editModelProviders(ctx, b, update.Message.Chat.ID, messageID, p.ModelScope)
+		return
+	}
+	if _, err := b.sendMessage(update.Message.Chat.ID, modelCommandTopicID(update.Message), modelScopeText(refresh), modelScopeKeyboard()); err != nil {
+		b.app.Logger().Warn("telegram send failed", "error", err)
+	}
 }
 
 func handleBotsCmd(ctx context.Context, b *Bot, update Update) {
@@ -447,7 +513,7 @@ func handleChooseModelScope(ctx context.Context, b *Bot, update Update) {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Unknown model scope.", nil)
 		return
 	}
-	b.setPending(q.From.ID, PendingState{Kind: "model", ModelScope: scope})
+	b.setPending(q.From.ID, modelPendingForScope(ctx, b, q.From.ID, q.Message, scope))
 	editModelProviders(ctx, b, q.Message.Chat.ID, q.Message.MessageID, scope)
 }
 
@@ -541,6 +607,10 @@ func handleChooseModel(ctx context.Context, b *Bot, update Update) {
 		}
 		sendWorkspaces(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "Choose workspace for "+modelDisplay(model)+":", "mws:", 0)
 	case "session":
+		if p.SessionID != "" {
+			applySessionModel(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageID, p.SessionID, p.ModelID)
+			return
+		}
 		sendWorkspaces(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "Choose workspace:", "msws:", 0)
 	}
 }
@@ -610,17 +680,7 @@ func handleApplySessionModel(ctx context.Context, b *Bot, update Update) {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Model selection expired. Send /model again.", nil)
 		return
 	}
-	sess, err := b.app.Store().GetSession(ctx, sessionID)
-	if err != nil {
-		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read session: "+err.Error(), nil)
-		return
-	}
-	if err := b.app.Store().SetSessionModel(ctx, sessionID, p.ModelID); err != nil {
-		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to update session model: "+err.Error(), nil)
-		return
-	}
-	b.clearPending(q.From.ID)
-	b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, fmt.Sprintf("Session model set to %s for %s.", p.ModelID, displaySession(sess)), nil)
+	applySessionModel(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageID, sessionID, p.ModelID)
 }
 
 // -- Callbacks (Workspace & Sessions) --
@@ -637,6 +697,20 @@ func applyWorkspaceModel(ctx context.Context, b *Bot, userID, chatID int64, mess
 	}
 	b.clearPending(userID)
 	b.editMessageText(chatID, messageID, fmt.Sprintf("Workspace model set to %s for %s.", modelID, workspaceLabel(ws)), nil)
+}
+
+func applySessionModel(ctx context.Context, b *Bot, userID, chatID int64, messageID int, sessionID, modelID string) {
+	sess, err := b.app.Store().GetSession(ctx, sessionID)
+	if err != nil {
+		b.editMessageText(chatID, messageID, "Failed to read session: "+err.Error(), nil)
+		return
+	}
+	if err := b.app.Store().SetSessionModel(ctx, sessionID, modelID); err != nil {
+		b.editMessageText(chatID, messageID, "Failed to update session model: "+err.Error(), nil)
+		return
+	}
+	b.clearPending(userID)
+	b.editMessageText(chatID, messageID, fmt.Sprintf("Session model set to %s for %s.", modelID, displaySession(sess)), nil)
 }
 
 func handleWorkspaceOpen(ctx context.Context, b *Bot, update Update) {
