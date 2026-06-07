@@ -1168,5 +1168,5 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 		return
 	}
 	clearTraceRetry(b, userID)
-	b.send(chatID, "Sent to session.", taskKeyboard(ws.ID, b.pinned(userID) == ws.Path))
+	b.send(chatID, "Sent to session.", startedTaskKeyboard(ws.ID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, sess.TopicID))
 }
