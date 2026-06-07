@@ -122,14 +122,7 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 	}
 
 	if msg.MessageThreadID == 0 || msg.MessageThreadID == generalTopicThreadID {
-		if r.textHandler == nil {
-			return
-		}
-		if r.bot.pinned(msg.From.ID) != "" {
-			r.textHandler(ctx, r.bot, update)
-			return
-		}
-		if msg.ReplyToMessage != nil && r.bot.hasPendingPromptReply(msg.From.ID, msg.Chat.ID, msg.ReplyToMessage.MessageID) {
+		if r.textHandler != nil {
 			r.textHandler(ctx, r.bot, update)
 		}
 		return

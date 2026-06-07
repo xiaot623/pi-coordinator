@@ -112,7 +112,7 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 			startNewTask(ctx, b, update.Message.Chat, update.Message.From.ID, ws.ID, prompt, nil)
 			return
 		}
-		promptForPinnedNewTask(b, update.Message.Chat, ws.Path)
+		promptForPinnedNewTask(b, update.Message.Chat, ws)
 		return
 	}
 	b.setPending(update.Message.From.ID, PendingState{Kind: "new_prompt", Prompt: prompt})
@@ -313,35 +313,63 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	if !msg.Chat.IsPrivate() {
+		// General-topic prompts should be sent as regular group messages.
+		// Using message_thread_id for the General topic can trigger 400 Bad Request
+		// in some Telegram forum setups.
+		b.send(chatID, "Choose a workspace with /new or /workspace, or /pin one for quick sends.", nil)
 		return
 	}
 	b.send(chatID, "Choose a workspace first with /new or /workspace.", nil)
 }
 
 func promptForPendingInput(b *Bot, chat Chat, userID int64, pending PendingState, text string) {
-	if !chat.IsPrivate() {
-		if b.pinned(userID) != "" {
-			text += "\n\nYou can send it as a normal message in General Topic."
-		} else {
-			text += "\n\nReply to this message with your content."
-		}
-	}
-	messageID, err := b.sendMessage(chat.ID, 0, text, nil)
-	if err != nil {
+	if _, err := b.sendMessage(chat.ID, 0, text, nil); err != nil {
 		b.app.Logger().Warn("telegram send failed", "error", err)
 		return
 	}
-	pending.PromptChatID = chat.ID
-	pending.PromptMessageID = messageID
 	b.setPending(userID, pending)
 }
 
-func promptForPinnedNewTask(b *Bot, chat Chat, workspacePath string) {
-	text := "Send the task description.\nPinned workspace: " + workspacePath
-	if !chat.IsPrivate() {
-		text += "\n\nYou can send it as a normal message in General Topic."
+func promptForNewTaskInput(ctx context.Context, b *Bot, chat Chat, userID, workspaceID int64) {
+	ws, err := b.app.Store().GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		b.send(chat.ID, "Failed to read workspace: "+err.Error(), nil)
+		return
 	}
-	b.send(chat.ID, text, nil)
+	text := "Send the task description."
+	if chat.IsPrivate() {
+		text = "Send the task for " + workspaceLabel(ws) + "."
+	} else {
+		text = "Send in General Topic to create a session in " + workspaceLabel(ws) + "."
+	}
+	promptForPendingInput(b, chat, userID, PendingState{Kind: "await_new_prompt", WorkspaceID: workspaceID}, text)
+}
+
+func promptForResumeInput(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID string) {
+	sess, err := b.app.Store().GetSession(ctx, sessionID)
+	if err != nil {
+		b.send(chat.ID, "Failed to read session: "+err.Error(), nil)
+		return
+	}
+	text := "Send the message to continue this session."
+	if chat.IsPrivate() {
+		text = "Send the next message for " + displaySession(sess) + "."
+	} else {
+		text = "Send in General Topic to continue " + displaySession(sess) + "."
+	}
+	promptForPendingInput(b, chat, userID, PendingState{Kind: "await_resume_prompt", SessionID: sessionID}, text)
+}
+
+func promptForPinnedNewTask(b *Bot, chat Chat, ws store.Workspace) {
+	text := "Send the task description."
+	if chat.IsPrivate() {
+		text = "Send the task for " + workspaceLabel(ws) + "."
+	} else {
+		text = "Send in General Topic to create a session in " + workspaceLabel(ws) + "."
+	}
+	if _, err := b.sendMessage(chat.ID, 0, text, nil); err != nil {
+		b.app.Logger().Warn("telegram send failed", "error", err)
+	}
 }
 
 func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
@@ -690,7 +718,7 @@ func handleChooseWorkspaceForNewTask(ctx context.Context, b *Bot, update Update)
 		startNewTask(ctx, b, q.Message.Chat, q.From.ID, id, p.Prompt, images)
 		return
 	}
-	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
+	promptForNewTaskInput(ctx, b, q.Message.Chat, q.From.ID, id)
 }
 
 func handleChooseWorkspaceForPin(ctx context.Context, b *Bot, update Update) {
@@ -786,7 +814,7 @@ func handleAddOpen(ctx context.Context, b *Bot, update Update) {
 func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "ns:"), 10, 64)
-	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
+	promptForNewTaskInput(ctx, b, q.Message.Chat, q.From.ID, id)
 }
 
 func handleRunLocal(ctx context.Context, b *Bot, update Update) {
@@ -804,7 +832,7 @@ func handleRunDocker(ctx context.Context, b *Bot, update Update) {
 func handleSessionCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	sid := strings.TrimPrefix(q.Data, "s:")
-	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_resume_prompt", SessionID: sid}, "Send the message to continue this session.")
+	promptForResumeInput(ctx, b, q.Message.Chat, q.From.ID, sid)
 }
 
 func handleSessionPage(ctx context.Context, b *Bot, update Update) {
@@ -826,7 +854,7 @@ func handleSessionsList(ctx context.Context, b *Bot, update Update) {
 func handleNewCallback(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
 	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "new:"), 10, 64)
-	promptForPendingInput(b, q.Message.Chat, q.From.ID, PendingState{Kind: "await_new_prompt", WorkspaceID: id}, "Send the task description.")
+	promptForNewTaskInput(ctx, b, q.Message.Chat, q.From.ID, id)
 }
 
 func handlePinCallback(ctx context.Context, b *Bot, update Update) {

@@ -40,8 +40,6 @@ type PendingState struct {
 	ImagesJSON       string // JSON-serialised []runner.ImageAttachment, for trace retry
 	TaskChatID       int64
 	TaskChatType     string
-	PromptChatID     int64
-	PromptMessageID  int
 	ModelScope       string
 	ModelID          string
 	Provider         string
@@ -122,17 +120,6 @@ func (b *Bot) clearPending(userID int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.pending, userID)
-}
-
-func (b *Bot) hasPendingPromptReply(userID, chatID int64, replyToMessageID int) bool {
-	if replyToMessageID == 0 {
-		return false
-	}
-	p, ok := b.getPending(userID)
-	return ok &&
-		(p.Kind == "await_new_prompt" || p.Kind == "await_resume_prompt") &&
-		p.PromptChatID == chatID &&
-		p.PromptMessageID == replyToMessageID
 }
 
 func (b *Bot) pinned(userID int64) string {
