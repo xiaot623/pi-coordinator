@@ -45,6 +45,9 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("msws:", handleChooseSessionWorkspace)
 	b.router.Callback("msp:", handleModelSessionPage)
 	b.router.Callback("msess:", handleApplySessionModel)
+	b.router.Callback("wsopen:", handleWorkspaceOpen)
+	b.router.Callback("wsmodel:", handleWorkspaceModel)
+	b.router.Callback("wspin:", handleWorkspacePin)
 
 	b.router.Callback("wp:", handleWorkspacePage)
 	b.router.Callback("newwsp:", handleNewWorkspacePage)
@@ -502,6 +505,10 @@ func handleChooseModel(ctx context.Context, b *Bot, update Update) {
 		b.clearPending(q.From.ID)
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Global model set to "+p.ModelID+".", nil)
 	case "workspace":
+		if p.WorkspaceID != 0 {
+			applyWorkspaceModel(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageID, p.WorkspaceID, p.ModelID)
+			return
+		}
 		sendWorkspaces(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "Choose workspace for "+modelDisplay(model)+":", "mws:", 0)
 	case "session":
 		sendWorkspaces(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "Choose workspace:", "msws:", 0)
@@ -529,17 +536,7 @@ func handleApplyWorkspaceModel(ctx context.Context, b *Bot, update Update) {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Model selection expired. Send /model again.", nil)
 		return
 	}
-	ws, err := b.app.Store().GetWorkspace(ctx, id)
-	if err != nil {
-		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read workspace: "+err.Error(), nil)
-		return
-	}
-	if err := b.app.Store().SetWorkspaceModel(ctx, id, p.ModelID); err != nil {
-		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to update workspace model: "+err.Error(), nil)
-		return
-	}
-	b.clearPending(q.From.ID)
-	b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, fmt.Sprintf("Workspace model set to %s for %s.", p.ModelID, workspaceLabel(ws)), nil)
+	applyWorkspaceModel(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageID, id, p.ModelID)
 }
 
 func handleChooseSessionWorkspace(ctx context.Context, b *Bot, update Update) {
@@ -597,6 +594,65 @@ func handleApplySessionModel(ctx context.Context, b *Bot, update Update) {
 }
 
 // -- Callbacks (Workspace & Sessions) --
+
+func applyWorkspaceModel(ctx context.Context, b *Bot, userID, chatID int64, messageID int, workspaceID int64, modelID string) {
+	ws, err := b.app.Store().GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		b.editMessageText(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	if err := b.app.Store().SetWorkspaceModel(ctx, workspaceID, modelID); err != nil {
+		b.editMessageText(chatID, messageID, "Failed to update workspace model: "+err.Error(), nil)
+		return
+	}
+	b.clearPending(userID)
+	b.editMessageText(chatID, messageID, fmt.Sprintf("Workspace model set to %s for %s.", modelID, workspaceLabel(ws)), nil)
+}
+
+func handleWorkspaceOpen(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "wsopen:"), 10, 64)
+	ws, err := b.app.Store().GetWorkspace(ctx, id)
+	if err != nil {
+		b.answerCallback(q.ID, "Open failed")
+		b.send(q.Message.Chat.ID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	tool := strings.TrimSpace(b.app.Config().OpenTool)
+	if tool == "" {
+		tool = "iterm2"
+	}
+	if err := openWorkspace(ctx, tool, ws.Path); err != nil {
+		b.answerCallback(q.ID, "Open failed")
+		b.send(q.Message.Chat.ID, "Failed to open workspace with "+tool+": "+err.Error(), nil)
+		return
+	}
+	b.answerCallback(q.ID, "Opened with "+tool)
+}
+
+func handleWorkspaceModel(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "wsmodel:"), 10, 64)
+	if _, err := b.app.Store().GetWorkspace(ctx, id); err != nil {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	b.setPending(q.From.ID, PendingState{Kind: "model", ModelScope: "workspace", WorkspaceID: id})
+	editModelProviders(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "workspace")
+}
+
+func handleWorkspacePin(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	id, _ := strconv.ParseInt(strings.TrimPrefix(q.Data, "wspin:"), 10, 64)
+	ws, err := b.app.Store().GetWorkspace(ctx, id)
+	if err != nil {
+		b.answerCallback(q.ID, "Pin failed")
+		b.send(q.Message.Chat.ID, "Pin failed: "+err.Error(), nil)
+		return
+	}
+	pinWorkspace(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageThreadID, ws)
+	b.answerCallback(q.ID, "Pinned "+workspaceLabel(ws))
+}
 
 func handleWorkspacePage(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery

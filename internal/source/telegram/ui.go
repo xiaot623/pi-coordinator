@@ -63,12 +63,18 @@ func sendSessions(ctx context.Context, b *Bot, chatID int64, messageID int, work
 		b.send(chatID, "Failed to read sessions: "+err.Error(), nil)
 		return
 	}
+	id := strconv.FormatInt(workspaceID, 10)
 	var rows [][]inlineKeyboardButton
-	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "+ New Session", CallbackData: "ns:" + strconv.FormatInt(workspaceID, 10)}))
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "+ New Session", CallbackData: "ns:" + id}))
 	for _, sess := range sessions {
 		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: displaySession(sess), CallbackData: "s:" + sess.ID}))
 	}
-	rows = appendPageNav(rows, page, total, sessionPageSize, "sp:"+strconv.FormatInt(workspaceID, 10)+":")
+	rows = appendPageNav(rows, page, total, sessionPageSize, "sp:"+id+":")
+	rows = append(rows, inlineKeyboardRow(
+		inlineKeyboardButton{Text: "📂 Open", CallbackData: "wsopen:" + id},
+		inlineKeyboardButton{Text: "🤖 Model", CallbackData: "wsmodel:" + id},
+		inlineKeyboardButton{Text: "📌 Pin", CallbackData: "wspin:" + id},
+	))
 	b.sendOrEdit(chatID, messageID, "Choose a session:", inlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
