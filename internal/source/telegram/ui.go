@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,10 +78,10 @@ func startAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, message
 		b.sendOrEdit(chatID, messageID, "Failed to find home directory: "+err.Error(), nil)
 		return
 	}
-	sendAddWorkspaceBrowser(ctx, b, chatID, messageID, userID, home, 0)
+	sendAddWorkspaceBrowser(ctx, b, chatID, messageID, userID, home, 0, false)
 }
 
-func sendAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, messageID int, userID int64, path string, page int) {
+func sendAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, messageID int, userID int64, path string, page int, showHidden bool) {
 	path = filepath.Clean(path)
 	info, err := os.Stat(path)
 	if err != nil {
@@ -91,30 +92,50 @@ func sendAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, messageI
 		b.sendOrEdit(chatID, messageID, "Not a directory: "+path, nil)
 		return
 	}
-	dirs, err := childDirectories(path)
+	dirs, hiddenCount, err := childDirectories(path, showHidden)
 	if err != nil {
 		b.sendOrEdit(chatID, messageID, "Failed to read directory: "+err.Error(), nil)
 		return
 	}
 	page = clampPage(page, len(dirs), addWorkspacePageSize)
-	b.setPending(userID, PendingState{Kind: "add_workspace", BrowsePath: path, BrowsePage: page})
+	b.setPending(userID, PendingState{Kind: "add_workspace", BrowsePath: path, BrowsePage: page, BrowseShowHidden: showHidden})
 
 	var rows [][]inlineKeyboardButton
-	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "Confirm Current Directory", CallbackData: "add:confirm"}))
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "✅ Select This Directory", CallbackData: "add:confirm"}))
+	var actions []inlineKeyboardButton
 	if parent := filepath.Dir(path); parent != path {
-		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "< Parent Directory", CallbackData: "add:up"}))
+		actions = append(actions, inlineKeyboardButton{Text: "⬆️ Parent", CallbackData: "add:up"})
+	}
+	if hiddenCount > 0 || showHidden {
+		toggleText := "👁 Show Hidden"
+		if showHidden {
+			toggleText = "🙈 Hide Hidden"
+		}
+		actions = append(actions, inlineKeyboardButton{Text: toggleText, CallbackData: "add:toggle"})
+	}
+	if len(actions) > 0 {
+		rows = append(rows, inlineKeyboardRow(actions...))
 	}
 	start := page * addWorkspacePageSize
 	end := min(start+addWorkspacePageSize, len(dirs))
 	for i, dir := range dirs[start:end] {
 		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: directoryButtonLabel(dir.Name), CallbackData: "add:open:" + strconv.Itoa(i)}))
 	}
-	rows = appendPageNav(rows, page, len(dirs), addWorkspacePageSize, "add:page:")
-	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "Cancel", CallbackData: "add:cancel"}))
+	rows = appendAddWorkspacePageNav(rows, page, len(dirs), addWorkspacePageSize)
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "✖️ Cancel", CallbackData: "add:cancel"}))
 
 	text := "Add workspace\nCurrent directory: " + path
+	if showHidden {
+		text += "\nShowing hidden directories."
+	} else if hiddenCount > 0 {
+		text += fmt.Sprintf("\nHidden directories are filtered. %d hidden.", hiddenCount)
+	}
 	if len(dirs) == 0 {
-		text += "\nNo child directories."
+		if showHidden {
+			text += "\nNo child directories."
+		} else {
+			text += "\nNo visible child directories."
+		}
 	}
 	b.sendOrEdit(chatID, messageID, text, inlineKeyboardMarkup{InlineKeyboard: rows})
 }
@@ -210,12 +231,13 @@ type childDirectory struct {
 	Path string
 }
 
-func childDirectories(path string) ([]childDirectory, error) {
+func childDirectories(path string, showHidden bool) ([]childDirectory, int, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var dirs []childDirectory
+	hiddenCount := 0
 	for _, entry := range entries {
 		if entry.Name() == "." || entry.Name() == ".." {
 			continue
@@ -224,6 +246,13 @@ func childDirectories(path string) ([]childDirectory, error) {
 		info, err := os.Stat(childPath)
 		if err != nil || !info.IsDir() {
 			continue
+		}
+		isHidden := strings.HasPrefix(entry.Name(), ".")
+		if isHidden {
+			hiddenCount++
+			if !showHidden {
+				continue
+			}
 		}
 		dirs = append(dirs, childDirectory{Name: entry.Name(), Path: childPath})
 	}
@@ -235,7 +264,7 @@ func childDirectories(path string) ([]childDirectory, error) {
 		}
 		return left < right
 	})
-	return dirs, nil
+	return dirs, hiddenCount, nil
 }
 
 func directoryButtonLabel(name string) string {
@@ -609,6 +638,21 @@ func appendPageNav(rows [][]inlineKeyboardButton, page, total, pageSize int, pre
 	}
 	if (page+1)*pageSize < total {
 		nav = append(nav, inlineKeyboardButton{Text: "Next >", CallbackData: prefix + strconv.Itoa(page+1)})
+	}
+	return append(rows, nav)
+}
+
+func appendAddWorkspacePageNav(rows [][]inlineKeyboardButton, page, total, pageSize int) [][]inlineKeyboardButton {
+	if total <= pageSize {
+		return rows
+	}
+	pages := (total + pageSize - 1) / pageSize
+	nav := []inlineKeyboardButton{{Text: fmt.Sprintf("%d/%d", page+1, pages), CallbackData: "add:page:" + strconv.Itoa(page)}}
+	if page > 0 {
+		nav = append([]inlineKeyboardButton{{Text: "‹", CallbackData: "add:page:" + strconv.Itoa(page-1)}}, nav...)
+	}
+	if page+1 < pages {
+		nav = append(nav, inlineKeyboardButton{Text: "›", CallbackData: "add:page:" + strconv.Itoa(page+1)})
 	}
 	return append(rows, nav)
 }

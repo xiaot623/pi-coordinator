@@ -33,20 +33,21 @@ type PinMessage struct {
 }
 
 type PendingState struct {
-	Kind            string
-	WorkspaceID     int64
-	SessionID       string
-	Prompt          string
-	ImagesJSON      string // JSON-serialised []runner.ImageAttachment, for trace retry
-	TaskChatID      int64
-	TaskChatType    string
-	PromptChatID    int64
-	PromptMessageID int
-	ModelScope      string
-	ModelID         string
-	Provider        string
-	BrowsePath      string
-	BrowsePage      int
+	Kind             string
+	WorkspaceID      int64
+	SessionID        string
+	Prompt           string
+	ImagesJSON       string // JSON-serialised []runner.ImageAttachment, for trace retry
+	TaskChatID       int64
+	TaskChatType     string
+	PromptChatID     int64
+	PromptMessageID  int
+	ModelScope       string
+	ModelID          string
+	Provider         string
+	BrowsePath       string
+	BrowsePage       int
+	BrowseShowHidden bool
 }
 
 func NewBot(a *app.App) *Bot {

@@ -52,6 +52,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("add:confirm", handleAddConfirm)
 	b.router.Callback("add:cancel", handleAddCancel)
 	b.router.Callback("add:up", handleAddUp)
+	b.router.Callback("add:toggle", handleAddToggle)
 	b.router.Callback("add:page:", handleAddPage)
 	b.router.Callback("add:open:", handleAddOpen)
 
@@ -590,7 +591,17 @@ func handleAddUp(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	parent := filepath.Dir(p.BrowsePath)
-	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, parent, 0)
+	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, parent, 0, p.BrowseShowHidden)
+}
+
+func handleAddToggle(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	p, ok := b.getPending(q.From.ID)
+	if !ok || p.Kind != "add_workspace" || p.BrowsePath == "" {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace add expired. Send /add again.", nil)
+		return
+	}
+	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, p.BrowsePath, 0, !p.BrowseShowHidden)
 }
 
 func handleAddPage(ctx context.Context, b *Bot, update Update) {
@@ -601,7 +612,7 @@ func handleAddPage(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	page, _ := strconv.Atoi(strings.TrimPrefix(q.Data, "add:page:"))
-	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, p.BrowsePath, page)
+	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, p.BrowsePath, page, p.BrowseShowHidden)
 }
 
 func handleAddOpen(ctx context.Context, b *Bot, update Update) {
@@ -612,7 +623,7 @@ func handleAddOpen(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	index, _ := strconv.Atoi(strings.TrimPrefix(q.Data, "add:open:"))
-	dirs, err := childDirectories(p.BrowsePath)
+	dirs, _, err := childDirectories(p.BrowsePath, p.BrowseShowHidden)
 	if err != nil {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read directory: "+err.Error(), nil)
 		return
@@ -622,7 +633,7 @@ func handleAddOpen(ctx context.Context, b *Bot, update Update) {
 		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Directory selection expired. Send /add again.", nil)
 		return
 	}
-	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, dirs[absoluteIndex].Path, 0)
+	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, dirs[absoluteIndex].Path, 0, p.BrowseShowHidden)
 }
 
 func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {
