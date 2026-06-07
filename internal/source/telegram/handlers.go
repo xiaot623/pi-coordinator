@@ -20,6 +20,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("workspace", handleWorkspaceCmd)
 	b.router.Command("add", handleAddCmd)
 	b.router.Command("new", handleNewCmd)
+	b.router.Command("status", handleStatusCmd)
 	b.router.Command("open", handleOpenCmd)
 	b.router.Command("rebase", handleRebaseCmd)
 	b.router.Command("commit", handleCommitCmd)
@@ -69,6 +70,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("s:", handleSessionCallback)
 	b.router.Callback("sp:", handleSessionPage)
 	b.router.Callback("sessions:", handleSessionsList)
+	b.router.Callback("status:", handleStatusCallback)
 	b.router.Callback("new:", handleNewCallback)
 	b.router.Callback("pin:", handlePinCallback)
 	b.router.Callback("trace:retry", handleTraceRetry)
@@ -77,7 +79,7 @@ func (b *Bot) registerHandlers() {
 // -- Command Handlers --
 
 func handleHelp(ctx context.Context, b *Bot, update Update) {
-	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, /new to start a task, and /rebase or /commit inside a session topic.", nil)
+	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, /new to start a task, /status to inspect active sessions, and /rebase or /commit inside a session topic.", nil)
 }
 
 func handleSync(ctx context.Context, b *Bot, update Update) {

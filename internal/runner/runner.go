@@ -1,6 +1,10 @@
 package runner
 
-import "context"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 // ImageAttachment mirrors pi's RPC image format.
 type ImageAttachment struct {
@@ -17,7 +21,20 @@ type Runner interface {
 	Prompt(ctx context.Context, req StartRequest, message string, images []ImageAttachment) error
 	Steer(ctx context.Context, req StartRequest, message string, images []ImageAttachment) error
 	AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo, error)
+	ActiveProcesses() []ProcessInfo
+	StopSession(ctx context.Context, sessionID string) error
 }
+
+// ProcessInfo describes a currently active pi runtime process for a session.
+type ProcessInfo struct {
+	SessionID string
+	PID       int
+	Busy      bool
+	StartedAt time.Time
+	LastUsed  time.Time
+}
+
+var ErrSessionNotActive = errors.New("session is not active")
 
 type StartRequest struct {
 	SessionID            string

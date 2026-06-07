@@ -103,6 +103,54 @@ func (d *Docker) AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo
 	return cached, nil
 }
 
+func (d *Docker) ActiveProcesses() []ProcessInfo {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]ProcessInfo, 0, len(d.procs))
+	for sessionID, proc := range d.procs {
+		proc.mu.Lock()
+		pid := 0
+		if proc.cmd != nil && proc.cmd.Process != nil {
+			pid = proc.cmd.Process.Pid
+		}
+		out = append(out, ProcessInfo{
+			SessionID: sessionID,
+			PID:       pid,
+			Busy:      proc.streaming,
+			StartedAt: proc.startedAt,
+			LastUsed:  proc.lastUsed,
+		})
+		proc.mu.Unlock()
+	}
+	return out
+}
+
+func (d *Docker) StopSession(ctx context.Context, sessionID string) error {
+	_ = ctx
+	d.mu.Lock()
+	proc := d.procs[sessionID]
+	d.mu.Unlock()
+	if proc == nil {
+		return ErrSessionNotActive
+	}
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	if proc.stdin != nil {
+		_ = proc.stdin.Close()
+		proc.stdin = nil
+	}
+	if proc.cmd == nil || proc.cmd.Process == nil {
+		return ErrSessionNotActive
+	}
+	if err := proc.cmd.Process.Kill(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	delete(d.procs, sessionID)
+	d.mu.Unlock()
+	return nil
+}
+
 func (d *Docker) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bool, error) {
 	d.mu.Lock()
 	if proc := d.procs[req.SessionID]; proc != nil {
@@ -136,7 +184,8 @@ func (d *Docker) ensure(ctx context.Context, req StartRequest) (*LocalProcess, b
 	if err := cmd.Start(); err != nil {
 		return nil, false, err
 	}
-	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, lastUsed: time.Now()}
+	now := time.Now()
+	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, startedAt: now, lastUsed: now}
 	d.mu.Lock()
 	d.procs[req.SessionID] = proc
 	d.mu.Unlock()

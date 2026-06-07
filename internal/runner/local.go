@@ -45,6 +45,7 @@ type LocalProcess struct {
 	stdin     io.WriteCloser
 	mu        sync.Mutex
 	streaming bool
+	startedAt time.Time
 	lastUsed  time.Time
 }
 
@@ -112,6 +113,54 @@ func (l *Local) AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo,
 	return cached, nil
 }
 
+func (l *Local) ActiveProcesses() []ProcessInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]ProcessInfo, 0, len(l.procs))
+	for sessionID, proc := range l.procs {
+		proc.mu.Lock()
+		pid := 0
+		if proc.cmd != nil && proc.cmd.Process != nil {
+			pid = proc.cmd.Process.Pid
+		}
+		out = append(out, ProcessInfo{
+			SessionID: sessionID,
+			PID:       pid,
+			Busy:      proc.streaming,
+			StartedAt: proc.startedAt,
+			LastUsed:  proc.lastUsed,
+		})
+		proc.mu.Unlock()
+	}
+	return out
+}
+
+func (l *Local) StopSession(ctx context.Context, sessionID string) error {
+	_ = ctx
+	l.mu.Lock()
+	proc := l.procs[sessionID]
+	l.mu.Unlock()
+	if proc == nil {
+		return ErrSessionNotActive
+	}
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	if proc.stdin != nil {
+		_ = proc.stdin.Close()
+		proc.stdin = nil
+	}
+	if proc.cmd == nil || proc.cmd.Process == nil {
+		return ErrSessionNotActive
+	}
+	if err := proc.cmd.Process.Kill(); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	delete(l.procs, sessionID)
+	l.mu.Unlock()
+	return nil
+}
+
 func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bool, error) {
 	l.mu.Lock()
 	if proc := l.procs[req.SessionID]; proc != nil {
@@ -165,7 +214,8 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 	if err := cmd.Start(); err != nil {
 		return nil, false, err
 	}
-	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, lastUsed: time.Now()}
+	now := time.Now()
+	proc := &LocalProcess{sessionID: req.SessionID, cmd: cmd, stdin: stdin, streaming: true, startedAt: now, lastUsed: now}
 	l.mu.Lock()
 	l.procs[req.SessionID] = proc
 	l.mu.Unlock()

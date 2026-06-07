@@ -41,3 +41,11 @@ func (r *WorktreeRunner) Steer(ctx context.Context, req StartRequest, message st
 func (r *WorktreeRunner) AvailableModels(ctx context.Context, refresh bool) ([]ModelInfo, error) {
 	return r.local.AvailableModels(ctx, refresh)
 }
+
+func (r *WorktreeRunner) ActiveProcesses() []ProcessInfo {
+	return r.local.ActiveProcesses()
+}
+
+func (r *WorktreeRunner) StopSession(ctx context.Context, sessionID string) error {
+	return r.local.StopSession(ctx, sessionID)
+}
