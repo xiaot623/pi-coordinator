@@ -51,7 +51,7 @@ func (r *Router) handleCommand(ctx context.Context, update Update) {
 	if handler, ok := r.commandHandlers[cmd]; ok {
 		handler(ctx, r.bot, update)
 	} else {
-		r.bot.send(msg.Chat.ID, "Unknown command. Available: /help /workspace /new /sync /pin /unpin /model /bots", nil)
+		r.bot.send(msg.Chat.ID, "Unknown command. Available: /help /workspace /add /new /open /sync /pin /unpin /model /bots", nil)
 	}
 }
 
@@ -137,6 +137,10 @@ func (r *Router) HandleUpdate(ctx context.Context, update Update) {
 
 	// Session topic message in the configured group chat.
 	if msg.MessageThreadID != 0 {
+		if msg.IsCommand() && msg.Command() == "open" {
+			r.handleCommand(ctx, update)
+			return
+		}
 		if r.topicHandler != nil {
 			r.topicHandler(ctx, r.bot, update)
 		}

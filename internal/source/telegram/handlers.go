@@ -17,7 +17,9 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("help", handleHelp)
 	b.router.Command("sync", handleSync)
 	b.router.Command("workspace", handleWorkspaceCmd)
+	b.router.Command("add", handleAddCmd)
 	b.router.Command("new", handleNewCmd)
+	b.router.Command("open", handleOpenCmd)
 	b.router.Command("pin", handlePinCmd)
 	b.router.Command("unpin", handleUnpin)
 	b.router.Command("model", handleModelCmd)
@@ -47,6 +49,11 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("w:", handleChooseWorkspaceForSession)
 	b.router.Callback("newws:", handleChooseWorkspaceForNewTask)
 	b.router.Callback("pinws:", handleChooseWorkspaceForPin)
+	b.router.Callback("add:confirm", handleAddConfirm)
+	b.router.Callback("add:cancel", handleAddCancel)
+	b.router.Callback("add:up", handleAddUp)
+	b.router.Callback("add:page:", handleAddPage)
+	b.router.Callback("add:open:", handleAddOpen)
 
 	b.router.Callback("ns:", handleNewSessionCallback)
 	b.router.Callback("runlocal:", handleRunLocal)
@@ -80,6 +87,10 @@ func handleWorkspaceCmd(ctx context.Context, b *Bot, update Update) {
 	sendWorkspaces(ctx, b, update.Message.Chat.ID, 0, "Choose a workspace:", "w:", 0)
 }
 
+func handleAddCmd(ctx context.Context, b *Bot, update Update) {
+	startAddWorkspaceBrowser(ctx, b, update.Message.Chat.ID, 0, update.Message.From.ID)
+}
+
 func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 	prompt := strings.TrimSpace(update.Message.CommandArguments())
 	if path := b.pinned(update.Message.From.ID); path != "" {
@@ -97,6 +108,38 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 	}
 	b.setPending(update.Message.From.ID, PendingState{Kind: "new_prompt", Prompt: prompt})
 	sendWorkspaces(ctx, b, update.Message.Chat.ID, 0, "Choose a workspace:", "newws:", 0)
+}
+
+func handleOpenCmd(ctx context.Context, b *Bot, update Update) {
+	msg := update.Message
+	if msg.Chat.ID != b.app.Config().Telegram.GroupChatID || msg.MessageThreadID == 0 || msg.MessageThreadID == generalTopicThreadID {
+		b.send(msg.Chat.ID, "/open is only available inside a session topic.", nil)
+		return
+	}
+	sess, err := b.app.Store().GetSessionByTopic(ctx, msg.MessageThreadID)
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "No session is linked to this topic.", nil)
+		return
+	}
+	ws, err := b.app.Store().GetWorkspace(ctx, sess.WorkspaceID)
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	tool := strings.TrimSpace(b.app.Config().OpenTool)
+	if tool == "" {
+		tool = "iterm2"
+	}
+	openPath, openLabel, err := sessionOpenPath(sess, ws)
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to resolve workspace to open: "+err.Error(), nil)
+		return
+	}
+	if err := openWorkspace(ctx, tool, openPath); err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to open workspace with "+tool+": "+err.Error(), nil)
+		return
+	}
+	b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Opened "+openLabel+" with "+tool+": "+openPath, nil)
 }
 
 func handlePinCmd(ctx context.Context, b *Bot, update Update) {
@@ -511,6 +554,75 @@ func handleChooseWorkspaceForPin(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	pinWorkspace(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageThreadID, ws)
+}
+
+func handleAddConfirm(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	p, ok := b.getPending(q.From.ID)
+	if !ok || p.Kind != "add_workspace" || p.BrowsePath == "" {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace add expired. Send /add again.", nil)
+		return
+	}
+	ws, created, err := b.app.Store().UpsertWorkspace(ctx, p.BrowsePath, filepath.Base(p.BrowsePath))
+	if err != nil {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to add workspace: "+err.Error(), nil)
+		return
+	}
+	b.clearPending(q.From.ID)
+	if created {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace added: "+ws.Path, taskKeyboard(ws.ID, b.pinned(q.From.ID) == ws.Path))
+		return
+	}
+	b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace already exists: "+ws.Path, taskKeyboard(ws.ID, b.pinned(q.From.ID) == ws.Path))
+}
+
+func handleAddCancel(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	b.clearPending(q.From.ID)
+	b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace add cancelled.", nil)
+}
+
+func handleAddUp(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	p, ok := b.getPending(q.From.ID)
+	if !ok || p.Kind != "add_workspace" || p.BrowsePath == "" {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace add expired. Send /add again.", nil)
+		return
+	}
+	parent := filepath.Dir(p.BrowsePath)
+	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, parent, 0)
+}
+
+func handleAddPage(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	p, ok := b.getPending(q.From.ID)
+	if !ok || p.Kind != "add_workspace" || p.BrowsePath == "" {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace add expired. Send /add again.", nil)
+		return
+	}
+	page, _ := strconv.Atoi(strings.TrimPrefix(q.Data, "add:page:"))
+	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, p.BrowsePath, page)
+}
+
+func handleAddOpen(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	p, ok := b.getPending(q.From.ID)
+	if !ok || p.Kind != "add_workspace" || p.BrowsePath == "" {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Workspace add expired. Send /add again.", nil)
+		return
+	}
+	index, _ := strconv.Atoi(strings.TrimPrefix(q.Data, "add:open:"))
+	dirs, err := childDirectories(p.BrowsePath)
+	if err != nil {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read directory: "+err.Error(), nil)
+		return
+	}
+	absoluteIndex := p.BrowsePage*addWorkspacePageSize + index
+	if absoluteIndex < 0 || absoluteIndex >= len(dirs) {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Directory selection expired. Send /add again.", nil)
+		return
+	}
+	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, dirs[absoluteIndex].Path, 0)
 }
 
 func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {

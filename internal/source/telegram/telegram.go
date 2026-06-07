@@ -45,6 +45,8 @@ type PendingState struct {
 	ModelScope      string
 	ModelID         string
 	Provider        string
+	BrowsePath      string
+	BrowsePage      int
 }
 
 func NewBot(a *app.App) *Bot {
@@ -256,7 +258,9 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 		"commands": []map[string]string{
 			{"command": "help", "description": "Show help"},
 			{"command": "workspace", "description": "Choose a workspace and session"},
+			{"command": "add", "description": "Add a workspace"},
 			{"command": "new", "description": "Start a new task"},
+			{"command": "open", "description": "Open the current topic workspace"},
 			{"command": "sync", "description": "Import historical sessions"},
 			{"command": "pin", "description": "Pin a workspace"},
 			{"command": "unpin", "description": "Clear the pinned workspace"},

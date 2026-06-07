@@ -34,6 +34,7 @@ type Config struct {
 		Plugins                     []string `yaml:"plugins"`
 		PluginUpdateIntervalMinutes int      `yaml:"plugin_update_interval_minutes"`
 	} `yaml:"runner"`
+	OpenTool    string `yaml:"open_tool"`
 	GlobalModel string `yaml:"global_model"`
 }
 
@@ -86,6 +87,7 @@ func Load() (Config, Paths, error) {
 	cfg.Runner.DockerImage = "pi-agent:latest"
 	cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
 	cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
+	cfg.OpenTool = "iterm2"
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, paths, err
 	}
@@ -96,6 +98,9 @@ func Load() (Config, Paths, error) {
 	}
 	if cfg.Runner.DockerImage == "" {
 		cfg.Runner.DockerImage = "pi-agent:latest"
+	}
+	if cfg.OpenTool == "" {
+		cfg.OpenTool = "iterm2"
 	}
 	if cfg.Telegram.BotToken == "" || cfg.Telegram.GroupChatID == 0 || len(cfg.Telegram.AllowedUsers) == 0 {
 		return Config{}, paths, fmt.Errorf("telegram.bot_token, telegram.group_chat_id, and telegram.allowed_users are required in %s", paths.ConfigPath)
@@ -187,6 +192,7 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					cfg.Runner.DockerImage = "pi-agent:latest"
 					cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
 					cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
+					cfg.OpenTool = "iterm2"
 					if err := yaml.Unmarshal(data, &cfg); err != nil {
 						onChange(Config{}, err)
 						continue
@@ -198,6 +204,9 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					}
 					if cfg.Runner.DockerImage == "" {
 						cfg.Runner.DockerImage = "pi-agent:latest"
+					}
+					if cfg.OpenTool == "" {
+						cfg.OpenTool = "iterm2"
 					}
 					onChange(cfg, nil)
 				}

@@ -13,4 +13,5 @@ runner:
   # 0 checks on every Pi startup; negative values disable update checks.
   plugin_update_interval_minutes: 1440
 
+open_tool: "iterm2"
 global_model: ""

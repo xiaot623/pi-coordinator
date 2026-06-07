@@ -418,7 +418,9 @@ Session 列表展示时，标题优先级：
 | 命令 | 行为 |
 |------|------|
 | `/workspace` | 列出所有 workspace → 选 session → 开始对话 |
+| `/add` | 从 `~` 开始浏览目录 → 确认当前目录 → 添加 workspace |
 | `/new [描述]` | 带描述：选 workspace → 直接创建 session；无描述：选 workspace → 提示输入 |
+| `/open` | 在 Session Topic 内打开该 session 对应 workspace |
 | `/model` | 设置模型：选级别（Global/Workspace/Session）→ 选模型 → 确认 |
 | `/sync` | 扫描 sessions 目录，同步到数据库 |
 | `/unpin` | 清除 pin 状态 |

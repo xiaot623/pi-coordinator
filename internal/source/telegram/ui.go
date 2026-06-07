@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -13,9 +14,10 @@ import (
 )
 
 const (
-	workspacePageSize = 10
-	sessionPageSize   = 8
-	pinnedOnPrefix    = "Pinned on "
+	workspacePageSize    = 10
+	sessionPageSize      = 8
+	addWorkspacePageSize = 8
+	pinnedOnPrefix       = "Pinned on "
 )
 
 // -- UI Formatting --
@@ -67,6 +69,54 @@ func sendSessions(ctx context.Context, b *Bot, chatID int64, messageID int, work
 	}
 	rows = appendPageNav(rows, page, total, sessionPageSize, "sp:"+strconv.FormatInt(workspaceID, 10)+":")
 	b.sendOrEdit(chatID, messageID, "Choose a session:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func startAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, messageID int, userID int64) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to find home directory: "+err.Error(), nil)
+		return
+	}
+	sendAddWorkspaceBrowser(ctx, b, chatID, messageID, userID, home, 0)
+}
+
+func sendAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, messageID int, userID int64, path string, page int) {
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read directory: "+err.Error(), nil)
+		return
+	}
+	if !info.IsDir() {
+		b.sendOrEdit(chatID, messageID, "Not a directory: "+path, nil)
+		return
+	}
+	dirs, err := childDirectories(path)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read directory: "+err.Error(), nil)
+		return
+	}
+	page = clampPage(page, len(dirs), addWorkspacePageSize)
+	b.setPending(userID, PendingState{Kind: "add_workspace", BrowsePath: path, BrowsePage: page})
+
+	var rows [][]inlineKeyboardButton
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "Confirm Current Directory", CallbackData: "add:confirm"}))
+	if parent := filepath.Dir(path); parent != path {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "< Parent Directory", CallbackData: "add:up"}))
+	}
+	start := page * addWorkspacePageSize
+	end := min(start+addWorkspacePageSize, len(dirs))
+	for i, dir := range dirs[start:end] {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: directoryButtonLabel(dir.Name), CallbackData: "add:open:" + strconv.Itoa(i)}))
+	}
+	rows = appendPageNav(rows, page, len(dirs), addWorkspacePageSize, "add:page:")
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "Cancel", CallbackData: "add:cancel"}))
+
+	text := "Add workspace\nCurrent directory: " + path
+	if len(dirs) == 0 {
+		text += "\nNo child directories."
+	}
+	b.sendOrEdit(chatID, messageID, text, inlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func editModelProviders(ctx context.Context, b *Bot, chatID int64, messageID int, scope string) {
@@ -153,6 +203,47 @@ func workspaceLabel(ws store.Workspace) string {
 		label = string([]rune(label)[:24])
 	}
 	return label
+}
+
+type childDirectory struct {
+	Name string
+	Path string
+}
+
+func childDirectories(path string) ([]childDirectory, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []childDirectory
+	for _, entry := range entries {
+		if entry.Name() == "." || entry.Name() == ".." {
+			continue
+		}
+		childPath := filepath.Join(path, entry.Name())
+		info, err := os.Stat(childPath)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		dirs = append(dirs, childDirectory{Name: entry.Name(), Path: childPath})
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		left := strings.ToLower(dirs[i].Name)
+		right := strings.ToLower(dirs[j].Name)
+		if left == right {
+			return dirs[i].Name < dirs[j].Name
+		}
+		return left < right
+	})
+	return dirs, nil
+}
+
+func directoryButtonLabel(name string) string {
+	runes := []rune(name)
+	if len(runes) > 44 {
+		name = string(runes[:44])
+	}
+	return "> " + name
 }
 
 func sendPinnedWorkspaceMessage(b *Bot, userID, chatID int64, topicID int, ws store.Workspace) {
