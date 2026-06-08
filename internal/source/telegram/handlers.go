@@ -440,6 +440,24 @@ func promptForPinnedNewTask(b *Bot, chat Chat, ws store.Workspace) {
 	}
 }
 
+func refreshTopicGoalPin(ctx context.Context, b *Bot, sess store.Session, msg *Message) {
+	if msg == nil || msg.MessageID == 0 {
+		return
+	}
+	if err := b.pinChatMessage(msg.Chat.ID, msg.MessageID); err != nil {
+		b.app.Logger().Warn("telegram pin topic message failed", "chat_id", msg.Chat.ID, "message_id", msg.MessageID, "error", err)
+		return
+	}
+	if previous := sess.GoalMessageID; previous != 0 && previous != msg.MessageID {
+		if err := b.unpinChatMessage(ctx, msg.Chat.ID, previous); err != nil {
+			b.app.Logger().Warn("telegram unpin previous topic message failed", "chat_id", msg.Chat.ID, "message_id", previous, "error", err)
+		}
+	}
+	if err := b.app.Store().SetSessionGoalMessage(ctx, sess.ID, msg.MessageID); err != nil {
+		b.app.Logger().Warn("telegram persist topic pin failed", "session_id", sess.ID, "message_id", msg.MessageID, "error", err)
+	}
+}
+
 func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 	msg := update.Message
 	text := effectiveText(msg)
@@ -451,6 +469,7 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 	if err != nil {
 		return
 	}
+	refreshTopicGoalPin(ctx, b, sess, msg)
 	ws, err := b.app.Store().GetWorkspace(ctx, sess.WorkspaceID)
 	if err != nil {
 		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Could not find the workspace for this session.", nil)

@@ -416,6 +416,23 @@ func (s *Store) SetSessionTopic(ctx context.Context, sessionID string, topicID, 
 	return tx.Commit()
 }
 
+func (s *Store) SetSessionGoalMessage(ctx context.Context, sessionID string, goalMessageID int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET goal_message_id = ?, updated_at = ? WHERE id = ?`, goalMessageID, now, sessionID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := s.recomputeWorkspaceStatsForSessionTx(ctx, tx, sessionID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SetWorkspaceModel(ctx context.Context, workspaceID int64, model string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE workspaces SET model = ? WHERE id = ?`, model, workspaceID)
 	return err
