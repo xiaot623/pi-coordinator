@@ -43,6 +43,7 @@ type PendingState struct {
 	ModelScope       string
 	ModelID          string
 	Provider         string
+	ReturnKind       string
 	BrowsePath       string
 	BrowsePage       int
 	BrowseShowHidden bool

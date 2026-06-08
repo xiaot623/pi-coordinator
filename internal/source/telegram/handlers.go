@@ -35,6 +35,7 @@ func (b *Bot) registerHandlers() {
 
 	// Callbacks
 	b.router.Callback("model:scopes", handleModelScopes)
+	b.router.Callback("model:back", handleModelScopes)
 	b.router.Callback("model:cancel", handleModelCancel)
 	b.router.Callback("model:refresh", handleModelRefresh)
 	b.router.Callback("mscope:", handleChooseModelScope)
@@ -64,6 +65,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("add:open:", handleAddOpen)
 
 	b.router.Callback("ns:", handleNewSessionCallback)
+	b.router.Callback("runmodel:", handleRunModel)
 	b.router.Callback("runlocal:", handleRunLocal)
 	b.router.Callback("runworktree:", handleRunWorktree)
 	b.router.Callback("rundocker:", handleRunDocker)
@@ -487,12 +489,20 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 
 func handleModelScopes(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
+	if p, ok := b.getPending(q.From.ID); ok && p.Kind == "model" && p.ReturnKind == "await_run_mode" {
+		restoreAwaitRunMode(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageID, p)
+		return
+	}
 	b.clearPending(q.From.ID)
 	b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, modelScopeText(false), modelScopeKeyboard())
 }
 
 func handleModelCancel(ctx context.Context, b *Bot, update Update) {
 	q := update.CallbackQuery
+	if p, ok := b.getPending(q.From.ID); ok && p.Kind == "model" && p.ReturnKind == "await_run_mode" {
+		restoreAwaitRunMode(ctx, b, q.From.ID, q.Message.Chat.ID, q.Message.MessageID, p)
+		return
+	}
 	b.clearPending(q.From.ID)
 	b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Model selection cancelled.", nil)
 }
@@ -709,6 +719,10 @@ func applySessionModel(ctx context.Context, b *Bot, userID, chatID int64, messag
 		b.editMessageText(chatID, messageID, "Failed to update session model: "+err.Error(), nil)
 		return
 	}
+	if p, ok := b.getPending(userID); ok && p.Kind == "model" && p.ReturnKind == "await_run_mode" && p.SessionID == sessionID {
+		restoreAwaitRunMode(ctx, b, userID, chatID, messageID, p)
+		return
+	}
 	b.clearPending(userID)
 	b.editMessageText(chatID, messageID, fmt.Sprintf("Session model set to %s for %s.", modelID, displaySession(sess)), nil)
 }
@@ -895,6 +909,33 @@ func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {
 	promptForNewTaskInput(ctx, b, q.Message.Chat, q.From.ID, id)
 }
 
+func handleRunModel(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	sessionID := strings.TrimPrefix(q.Data, "runmodel:")
+	p, ok := b.getPending(q.From.ID)
+	if !ok || p.Kind != "await_run_mode" || p.SessionID != sessionID {
+		b.send(q.Message.Chat.ID, "Run request expired. Send the task again with /new.", nil)
+		return
+	}
+	sess, err := b.app.Store().GetSession(ctx, sessionID)
+	if err != nil {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read session: "+err.Error(), nil)
+		return
+	}
+	b.setPending(q.From.ID, PendingState{
+		Kind:         "model",
+		WorkspaceID:  sess.WorkspaceID,
+		SessionID:    sessionID,
+		Prompt:       p.Prompt,
+		ImagesJSON:   p.ImagesJSON,
+		TaskChatID:   p.TaskChatID,
+		TaskChatType: p.TaskChatType,
+		ModelScope:   "session",
+		ReturnKind:   "await_run_mode",
+	})
+	editModelProviders(ctx, b, q.Message.Chat.ID, q.Message.MessageID, "session")
+}
+
 func handleRunLocal(ctx context.Context, b *Bot, update Update) {
 	handleRunMode(ctx, b, update, "local")
 }
@@ -1011,6 +1052,43 @@ func appendImageContext(prompt string, images []runner.ImageAttachment) string {
 	return strings.TrimSpace(sb.String())
 }
 
+func createdTopicText(ctx context.Context, b *Bot, sess store.Session, ws store.Workspace) string {
+	text := fmt.Sprintf("Created topic: %s\nChoose how to run pi.", sess.Title)
+	model := b.app.ResolveModel(sess, ws)
+	if model == "" {
+		model = "pi default"
+	}
+	text += "\nModel: " + model
+	if b.app.IsGitWorkspace(ctx, ws) && b.app.HasDirtyChanges(ctx, ws) {
+		text += "\n\nWorktree and Docker will start from the current HEAD and will not include uncommitted changes in the original workspace."
+	}
+	return text
+}
+
+func restoreAwaitRunMode(ctx context.Context, b *Bot, userID, chatID int64, messageID int, p PendingState) {
+	restored := PendingState{
+		Kind:         "await_run_mode",
+		WorkspaceID:  p.WorkspaceID,
+		SessionID:    p.SessionID,
+		Prompt:       p.Prompt,
+		ImagesJSON:   p.ImagesJSON,
+		TaskChatID:   p.TaskChatID,
+		TaskChatType: p.TaskChatType,
+	}
+	b.setPending(userID, restored)
+	sess, err := b.app.Store().GetSession(ctx, p.SessionID)
+	if err != nil {
+		b.editMessageText(chatID, messageID, "Failed to read session: "+err.Error(), nil)
+		return
+	}
+	ws, err := b.app.Store().GetWorkspace(ctx, sess.WorkspaceID)
+	if err != nil {
+		b.editMessageText(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	b.editMessageText(chatID, messageID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws)))
+}
+
 func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspaceID int64, prompt string, images []runner.ImageAttachment) {
 	chatID := chat.ID
 	ws, err := b.app.GetSelectableWorkspace(ctx, workspaceID)
@@ -1047,12 +1125,7 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 		TaskChatID:   chat.ID,
 		TaskChatType: chat.Type,
 	})
-	gitWorkspace := b.app.IsGitWorkspace(ctx, ws)
-	text := fmt.Sprintf("Created topic: %s\nChoose how to run pi.", title)
-	if gitWorkspace && b.app.HasDirtyChanges(ctx, ws) {
-		text += "\n\nWorktree and Docker will start from the current HEAD and will not include uncommitted changes in the original workspace."
-	}
-	b.send(chatID, text, createdTopicKeyboard(sess.ID, gitWorkspace))
+	b.send(chatID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws)))
 }
 
 func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string) {

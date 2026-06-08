@@ -166,7 +166,7 @@ func editModelProviders(ctx context.Context, b *Bot, chatID int64, messageID int
 		rows = append(rows, row)
 	}
 	rows = append(rows, inlineKeyboardRow(
-		inlineKeyboardButton{Text: "< Scope", CallbackData: "model:scopes"},
+		inlineKeyboardButton{Text: "< Back", CallbackData: "model:back"},
 		inlineKeyboardButton{Text: "Cancel", CallbackData: "model:cancel"},
 	))
 	b.editMessageText(chatID, messageID, "Choose provider for "+scopeLabel(scope)+":", inlineKeyboardMarkup{InlineKeyboard: rows})
@@ -371,7 +371,10 @@ func createdTopicKeyboard(sessionID string, gitWorkspace bool) inlineKeyboardMar
 			inlineKeyboardButton{Text: "Docker", CallbackData: "rundocker:" + sessionID},
 		)
 	}
-	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{runRow}}
+	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
+		runRow,
+		inlineKeyboardRow(inlineKeyboardButton{Text: "🤖 Model", CallbackData: "runmodel:" + sessionID}),
+	}}
 }
 
 func topicURL(groupChatID int64, topicID int) string {
