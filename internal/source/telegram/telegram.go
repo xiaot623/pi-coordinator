@@ -250,6 +250,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{"command": "add", "description": "Add a workspace"},
 			{"command": "new", "description": "Start a new task"},
 			{"command": "status", "description": "List active sessions"},
+			{"command": "detail", "description": "Show current path, mode, model, and git summary"},
 			{"command": "open", "description": "Open the current topic workspace"},
 			{"command": "rebase", "description": "Rebase a worktree/docker session from the main branch"},
 			{"command": "commit", "description": "Commit a worktree/docker session back to the main branch"},

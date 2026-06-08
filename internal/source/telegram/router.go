@@ -51,7 +51,7 @@ func (r *Router) handleCommand(ctx context.Context, update Update) {
 	if handler, ok := r.commandHandlers[cmd]; ok {
 		handler(ctx, r.bot, update)
 	} else {
-		r.bot.send(msg.Chat.ID, "Unknown command. Available: /help /workspace /add /new /status /open /rebase /commit /sync /pin /unpin /model /bots", nil)
+		r.bot.send(msg.Chat.ID, "Unknown command. Available: /help /workspace /add /new /status /detail /open /rebase /commit /sync /pin /unpin /model /bots", nil)
 	}
 }
 
