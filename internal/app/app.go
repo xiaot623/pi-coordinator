@@ -34,30 +34,38 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		return nil, err
 	}
 	pluginDir := filepath.Join(paths.DataDir, "agent")
+	workSessionDir := cfg.Runner.Worktree.SessionDir
+	if workSessionDir == "" {
+		workSessionDir = filepath.Join(paths.DataDir, "sessions", "worktree")
+	}
+	dockerSessionDir := cfg.Runner.Docker.SessionDir
+	if dockerSessionDir == "" {
+		dockerSessionDir = filepath.Join(paths.DataDir, "sessions", "docker")
+	}
 	localOpts := runner.LocalOptions{
-		Binary:               cfg.Runner.Binary,
-		SessionDir:           cfg.Runner.SessionDir,
-		IdleTimeout:          cfg.Runner.IdleTimeout.Duration,
-		Plugins:              cfg.Runner.Plugins,
+		Binary:               "pi",
+		SessionDir:           cfg.Runner.Local.SessionDir,
+		IdleTimeout:          cfg.Runner.Local.IdleTimeout.Duration,
+		Plugins:              cfg.Plugins,
 		PluginAgentDir:       pluginDir,
-		PluginUpdateInterval: time.Duration(cfg.Runner.PluginUpdateIntervalMinutes) * time.Minute,
+		PluginUpdateInterval: time.Duration(cfg.PluginUpdateIntervalMinutes) * time.Minute,
 		Logger:               logger,
 	}
 	rm := runner.NewLocal(localOpts)
-	workSessionDir := filepath.Join(paths.DataDir, "sessions", "worktree")
-	dockerSessionDir := filepath.Join(paths.DataDir, "sessions", "docker")
 	work := runner.NewWorktreeRunner(runner.WorktreeOptions{LocalOptions: localOpts, SessionDir: workSessionDir, Logger: logger})
 	home, _ := os.UserHomeDir()
 	docker := runner.NewDocker(runner.DockerOptions{
-		Binary:               cfg.Runner.Binary,
-		Image:                cfg.Runner.DockerImage,
+		Binary:               "pi",
+		Image:                cfg.Runner.Docker.Image,
+		Network:              cfg.Runner.Docker.Network,
+		AgentMountMode:       cfg.Runner.Docker.AgentMountMode,
 		HostAgentDir:         filepath.Join(home, ".pi", "agent"),
 		HostPluginDir:        pluginDir,
 		HostSkillsDir:        filepath.Join(home, ".agents", "skills"),
 		HostSessionDir:       dockerSessionDir,
-		IdleTimeout:          cfg.Runner.IdleTimeout.Duration,
-		Plugins:              cfg.Runner.Plugins,
-		PluginUpdateInterval: time.Duration(cfg.Runner.PluginUpdateIntervalMinutes) * time.Minute,
+		IdleTimeout:          cfg.Runner.Docker.IdleTimeout.Duration,
+		Plugins:              cfg.Plugins,
+		PluginUpdateInterval: time.Duration(cfg.PluginUpdateIntervalMinutes) * time.Minute,
 		Logger:               logger,
 	})
 	return &App{
@@ -115,10 +123,18 @@ func (a *App) SyncSessions(ctx context.Context) (int, int, error) {
 }
 
 func (a *App) SessionDirs() []string {
+	workDir := a.cfg.Runner.Worktree.SessionDir
+	if workDir == "" {
+		workDir = filepath.Join(a.paths.DataDir, "sessions", "worktree")
+	}
+	dockerDir := a.cfg.Runner.Docker.SessionDir
+	if dockerDir == "" {
+		dockerDir = filepath.Join(a.paths.DataDir, "sessions", "docker")
+	}
 	return []string{
-		a.cfg.Runner.SessionDir,
-		filepath.Join(a.paths.DataDir, "sessions", "worktree"),
-		filepath.Join(a.paths.DataDir, "sessions", "docker"),
+		a.cfg.Runner.Local.SessionDir,
+		workDir,
+		dockerDir,
 	}
 }
 

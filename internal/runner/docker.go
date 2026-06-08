@@ -20,6 +20,7 @@ import (
 type DockerOptions struct {
 	Binary               string
 	Image                string
+	Network              string
 	ContainerHome        string
 	AgentMountMode       string
 	HostAgentDir         string
@@ -224,8 +225,11 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 		"--user", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()),
 		"-e", "HOME=" + d.opts.ContainerHome,
 		"-e", "NPM_CONFIG_CACHE=/tmp/npm-cache",
-		"-v", req.Workspace + ":" + req.Workspace + ":rw",
 	}
+	if d.opts.Network != "" && d.opts.Network != "bridge" {
+		args = append(args, "--network", d.opts.Network)
+	}
+	args = append(args, "-v", req.Workspace+":"+req.Workspace+":rw")
 	if req.TraceTelegramToken != "" && len(req.TraceTelegramChatIDs) > 0 {
 		args = append(args,
 			"-e", "PI_TRACE_TELEGRAM_BOT_TOKEN="+req.TraceTelegramToken,

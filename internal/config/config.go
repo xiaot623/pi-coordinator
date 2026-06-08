@@ -16,7 +16,7 @@ import (
 
 var ErrConfigMissing = errors.New("config missing")
 
-var defaultRunnerPlugins = []string{"@hahahhh/pi-trace@next"}
+var defaultPlugins = []string{"@hahahhh/pi-trace@next"}
 
 const defaultPluginUpdateIntervalMinutes = 1440
 
@@ -26,16 +26,27 @@ type Config struct {
 		GroupChatID  int64   `yaml:"group_chat_id"`
 		AllowedUsers []int64 `yaml:"allowed_users"`
 	} `yaml:"telegram"`
-	Runner struct {
-		IdleTimeout                 Duration `yaml:"idle_timeout"`
-		SessionDir                  string   `yaml:"session_dir"`
-		Binary                      string   `yaml:"binary"`
-		DockerImage                 string   `yaml:"docker_image"`
-		Plugins                     []string `yaml:"plugins"`
-		PluginUpdateIntervalMinutes int      `yaml:"plugin_update_interval_minutes"`
+	Plugins                     []string `yaml:"plugins"`
+	PluginUpdateIntervalMinutes int      `yaml:"plugin_update_interval_minutes"`
+	Runner                      struct {
+		Local    RunnerConfig `yaml:"local"`
+		Worktree RunnerConfig `yaml:"worktree"`
+		Docker   DockerConfig `yaml:"docker"`
 	} `yaml:"runner"`
 	OpenTool    string `yaml:"open_tool"`
 	GlobalModel string `yaml:"global_model"`
+}
+
+type RunnerConfig struct {
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	SessionDir  string   `yaml:"session_dir"`
+}
+
+type DockerConfig struct {
+	RunnerConfig   `yaml:",inline"`
+	Image          string `yaml:"image"`
+	Network        string `yaml:"network"`
+	AgentMountMode string `yaml:"agent_mount_mode"`
 }
 
 type Paths struct {
@@ -81,23 +92,25 @@ func Load() (Config, Paths, error) {
 		return Config{}, paths, err
 	}
 	cfg := Config{}
-	cfg.Runner.IdleTimeout.Duration = 5 * time.Minute
-	cfg.Runner.SessionDir = "~/.pi/agent/sessions"
-	cfg.Runner.Binary = "pi"
-	cfg.Runner.DockerImage = "pi-agent:latest"
-	cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
-	cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
+	cfg.Runner.Local.IdleTimeout.Duration = 5 * time.Minute
+	cfg.Runner.Local.SessionDir = "~/.pi/agent/sessions"
+	cfg.Runner.Worktree.IdleTimeout.Duration = 5 * time.Minute
+	cfg.Runner.Docker.IdleTimeout.Duration = 5 * time.Minute
+	cfg.Runner.Docker.Image = "pi-agent:latest"
+	cfg.Runner.Docker.Network = "bridge"
+	cfg.Runner.Docker.AgentMountMode = "rw"
+	cfg.Plugins = append([]string(nil), defaultPlugins...)
+	cfg.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 	cfg.OpenTool = "iterm2"
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, paths, err
 	}
-	cfg.Runner.SessionDir = ExpandPath(cfg.Runner.SessionDir)
-	cfg.Runner.Plugins = expandPaths(cfg.Runner.Plugins)
-	if cfg.Runner.Binary == "" {
-		cfg.Runner.Binary = "pi"
-	}
-	if cfg.Runner.DockerImage == "" {
-		cfg.Runner.DockerImage = "pi-agent:latest"
+	cfg.Runner.Local.SessionDir = ExpandPath(cfg.Runner.Local.SessionDir)
+	cfg.Runner.Worktree.SessionDir = ExpandPath(cfg.Runner.Worktree.SessionDir)
+	cfg.Runner.Docker.SessionDir = ExpandPath(cfg.Runner.Docker.SessionDir)
+	cfg.Plugins = expandPaths(cfg.Plugins)
+	if cfg.Runner.Docker.Image == "" {
+		cfg.Runner.Docker.Image = "pi-agent:latest"
 	}
 	if cfg.OpenTool == "" {
 		cfg.OpenTool = "iterm2"
@@ -177,33 +190,32 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					lastReload = time.Now()
 
 					// Re-load the config
-					// We read directly instead of Load() because Load() re-checks defaults
-					// But Load() also expands paths. We should probably just call a private load or re-resolve.
-					// Actually, the easiest is to read the file and Unmarshal again.
 					data, err := os.ReadFile(configPath)
 					if err != nil {
 						onChange(Config{}, err)
 						continue
 					}
 					var cfg Config
-					cfg.Runner.IdleTimeout.Duration = 5 * time.Minute
-					cfg.Runner.SessionDir = "~/.pi/agent/sessions"
-					cfg.Runner.Binary = "pi"
-					cfg.Runner.DockerImage = "pi-agent:latest"
-					cfg.Runner.Plugins = append([]string(nil), defaultRunnerPlugins...)
-					cfg.Runner.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
+					cfg.Runner.Local.IdleTimeout.Duration = 5 * time.Minute
+					cfg.Runner.Local.SessionDir = "~/.pi/agent/sessions"
+					cfg.Runner.Worktree.IdleTimeout.Duration = 5 * time.Minute
+					cfg.Runner.Docker.IdleTimeout.Duration = 5 * time.Minute
+					cfg.Runner.Docker.Image = "pi-agent:latest"
+					cfg.Runner.Docker.Network = "bridge"
+					cfg.Runner.Docker.AgentMountMode = "rw"
+					cfg.Plugins = append([]string(nil), defaultPlugins...)
+					cfg.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 					cfg.OpenTool = "iterm2"
 					if err := yaml.Unmarshal(data, &cfg); err != nil {
 						onChange(Config{}, err)
 						continue
 					}
-					cfg.Runner.SessionDir = ExpandPath(cfg.Runner.SessionDir)
-					cfg.Runner.Plugins = expandPaths(cfg.Runner.Plugins)
-					if cfg.Runner.Binary == "" {
-						cfg.Runner.Binary = "pi"
-					}
-					if cfg.Runner.DockerImage == "" {
-						cfg.Runner.DockerImage = "pi-agent:latest"
+					cfg.Runner.Local.SessionDir = ExpandPath(cfg.Runner.Local.SessionDir)
+					cfg.Runner.Worktree.SessionDir = ExpandPath(cfg.Runner.Worktree.SessionDir)
+					cfg.Runner.Docker.SessionDir = ExpandPath(cfg.Runner.Docker.SessionDir)
+					cfg.Plugins = expandPaths(cfg.Plugins)
+					if cfg.Runner.Docker.Image == "" {
+						cfg.Runner.Docker.Image = "pi-agent:latest"
 					}
 					if cfg.OpenTool == "" {
 						cfg.OpenTool = "iterm2"
