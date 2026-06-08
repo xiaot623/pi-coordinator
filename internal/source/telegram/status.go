@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/app"
-	"github.com/xiaot/pi-coordinator/internal/runner"
+	"github.com/xiaot/pi-coordinator/internal/store"
 )
 
 const activeSessionPageSize = 8
@@ -81,16 +81,32 @@ func showActiveSession(ctx context.Context, b *Bot, chatID int64, messageID int,
 }
 
 func stopActiveSession(ctx context.Context, b *Bot, chatID int64, messageID int, sessionID string, page int) {
+	sess := store.Session{ID: sessionID}
 	title := sessionID
 	active, _ := b.app.ListActiveSessions(ctx)
 	for _, item := range active {
 		if item.Process.SessionID == sessionID {
+			sess = item.Session
 			title = displaySession(item.Session)
 			break
 		}
 	}
-	if err := b.app.StopActiveSession(ctx, sessionID); err != nil && err != runner.ErrSessionNotActive {
+	if sess.ID == "" {
+		sess.ID = sessionID
+	}
+	if strings.TrimSpace(title) == "" || title == sessionID {
+		if stored, err := b.app.Store().GetSession(ctx, sessionID); err == nil {
+			sess = stored
+			title = displaySession(stored)
+		}
+	}
+	alreadyInactive, err := stopSessionWithWarning(ctx, b, sess, chatID, 0)
+	if err != nil {
 		b.editMessageText(chatID, messageID, "Failed to stop session: "+err.Error(), nil)
+		return
+	}
+	if alreadyInactive {
+		sendActiveSessions(ctx, b, chatID, messageID, page, "Session was already inactive: "+title)
 		return
 	}
 	sendActiveSessions(ctx, b, chatID, messageID, page, "Stopped session: "+title)

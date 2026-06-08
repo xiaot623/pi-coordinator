@@ -21,6 +21,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("add", handleAddCmd)
 	b.router.Command("new", handleNewCmd)
 	b.router.Command("status", handleStatusCmd)
+	b.router.Command("stop", handleStopCmd)
 	b.router.Command("open", handleOpenCmd)
 	b.router.Command("rebase", handleRebaseCmd)
 	b.router.Command("commit", handleCommitCmd)
@@ -83,7 +84,7 @@ func (b *Bot) registerHandlers() {
 // -- Command Handlers --
 
 func handleHelp(ctx context.Context, b *Bot, update Update) {
-	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, /new to start a task, /status or /detail to inspect context, and /rebase or /commit inside a session topic.", nil)
+	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, /new to start a task, /status or /detail to inspect context, and /stop /open /rebase /commit inside a session topic.", nil)
 }
 
 func handleSync(ctx context.Context, b *Bot, update Update) {
