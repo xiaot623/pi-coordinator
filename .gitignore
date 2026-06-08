@@ -1,4 +1,5 @@
 dev_assets/
+user/
 /pico
 /dist/
 *.db
