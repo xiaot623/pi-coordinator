@@ -490,9 +490,9 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 
 	runnerPrompt := appendImageContext(text, images)
 	if sess.RunnerType == "" && sess.FilePath == "" && sess.WorktreePath == "" {
-		message := "Choose Run Local, Run Worktree, or Run Docker before sending follow-ups."
+		message := "Choose Local, Worktree, or Docker before sending follow-ups."
 		if b.app.IsTemporaryWorkspace(ws) {
-			message = "Choose Run Docker before sending follow-ups."
+			message = "Choose Docker before sending follow-ups."
 		}
 		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, message, nil)
 		return
@@ -1077,19 +1077,29 @@ func appendImageContext(prompt string, images []runner.ImageAttachment) string {
 }
 
 func awaitRunModeText(ctx context.Context, b *Bot, sess store.Session, ws store.Workspace) string {
-	text := fmt.Sprintf("Choose how to run pi.\nTopic: %s", sess.Title)
+	text := fmt.Sprintf("Choose a run mode for pi.\nTopic: %s", sess.Title)
+	if b.app.IsTemporaryWorkspace(ws) {
+		text += "\nWorkspace: Temporary session"
+	} else if ws.Name != "" && ws.Path != "" && ws.Name != filepath.Base(ws.Path) {
+		text += fmt.Sprintf("\nWorkspace: %s (%s)", ws.Name, ws.Path)
+	} else if ws.Path != "" {
+		text += "\nWorkspace: " + ws.Path
+	} else if ws.Name != "" {
+		text += "\nWorkspace: " + ws.Name
+	} else {
+		text += "\nWorkspace: -"
+	}
 	model := b.app.ResolveModel(sess, ws)
 	if model == "" {
 		model = "pi default"
 	}
 	text += "\nModel: " + model
-	text += "\nTopic will be created after you choose the run mode."
 	if b.app.IsTemporaryWorkspace(ws) {
-		text += "\nMode: Docker only (temporary session, no workspace mounted)."
+		text += "\nAvailable mode: Docker only (temporary session, no workspace mounted)."
 		return text
 	}
 	if b.app.IsGitWorkspace(ctx, ws) && b.app.HasDirtyChanges(ctx, ws) {
-		text += "\n\nWorktree and Docker will start from the current HEAD and will not include uncommitted changes in the original workspace."
+		text += "\n\nNote: Worktree and Docker start from HEAD and do not include uncommitted changes in the original workspace."
 	}
 	return text
 }

@@ -13,7 +13,7 @@ import (
 	"github.com/xiaot/pi-coordinator/internal/store"
 )
 
-func TestAwaitRunModeTextDefersTopicCreation(t *testing.T) {
+func TestAwaitRunModeTextIncludesWorkspace(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := config.Config{}
 	cfg.GlobalModel = "opencode-go/deepseek-v4-pro"
@@ -33,11 +33,14 @@ func TestAwaitRunModeTextDefersTopicCreation(t *testing.T) {
 	ws := store.Workspace{Path: filepath.Join(tmp, "workspace")}
 	text := awaitRunModeText(context.Background(), b, sess, ws)
 
-	if strings.Contains(text, "Created topic:") {
-		t.Fatalf("text should not say topic was already created: %q", text)
+	if !strings.Contains(text, "Choose a run mode for pi.") {
+		t.Fatalf("text should use the updated heading: %q", text)
 	}
-	if !strings.Contains(text, "Topic will be created after you choose the run mode.") {
-		t.Fatalf("text should explain topic creation is deferred: %q", text)
+	if strings.Contains(text, "Topic will be created after you choose the run mode.") {
+		t.Fatalf("text should not include deferred topic creation copy: %q", text)
+	}
+	if !strings.Contains(text, "Workspace: "+ws.Path) {
+		t.Fatalf("text should include workspace info: %q", text)
 	}
 	if !strings.Contains(text, "Model: opencode-go/deepseek-v4-pro") {
 		t.Fatalf("text should include resolved model: %q", text)
