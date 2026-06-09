@@ -1,6 +1,6 @@
 {
   "name": "@hahahhh/pi-coordinator",
-  "version": "0.0.1-rc.10",
+  "version": "0.0.1-rc.11",
   "type": "module",
   "description": "Telegram coordinator for pi coding sessions",
   "repository": {
