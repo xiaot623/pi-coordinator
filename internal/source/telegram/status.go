@@ -145,15 +145,22 @@ func activeSessionDetailText(b *Bot, item app.ActiveSession) string {
 		status = "busy"
 	}
 	workspace := item.Workspace.Path
-	if workspace == "" {
-		workspace = "-"
-	}
 	workspaceName := item.Workspace.Name
-	if workspaceName == "" && workspace != "-" {
-		workspaceName = filepath.Base(workspace)
-	}
-	if workspaceName == "" {
-		workspaceName = "-"
+	if b.app.IsTemporaryWorkspace(item.Workspace) {
+		workspace = "-"
+		if workspaceName == "" {
+			workspaceName = "Temporary session"
+		}
+	} else {
+		if workspace == "" {
+			workspace = "-"
+		}
+		if workspaceName == "" && workspace != "-" {
+			workspaceName = filepath.Base(workspace)
+		}
+		if workspaceName == "" {
+			workspaceName = "-"
+		}
 	}
 	model := b.app.ResolveModel(item.Session, item.Workspace)
 	if model == "" {

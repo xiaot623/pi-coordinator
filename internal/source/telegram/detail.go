@@ -126,7 +126,7 @@ func resolveDetailScope(ctx context.Context, b *Bot, msg *Message, userID int64)
 			return scope, err
 		}
 		scope.State = state
-		scope.Path = detailEffectivePath(sess, ws)
+		scope.Path = detailEffectivePath(sess, ws, b.app.IsTemporaryWorkspace(ws))
 	} else if path := b.pinned(userID); path != "" {
 		ws, err := b.app.GetSelectableWorkspaceByPath(ctx, path)
 		if err != nil {
@@ -179,7 +179,7 @@ func detailSessionState(ctx context.Context, b *Bot, sessionID string) (string, 
 	return "not running", nil
 }
 
-func detailEffectivePath(sess store.Session, ws store.Workspace) string {
+func detailEffectivePath(sess store.Session, ws store.Workspace, temporary bool) string {
 	switch detailRunMode(sess.RunnerType) {
 	case "worktree", "docker":
 		if path := strings.TrimSpace(sess.WorktreePath); path != "" {
@@ -189,8 +189,10 @@ func detailEffectivePath(sess store.Session, ws store.Workspace) string {
 			return path
 		}
 	}
-	if path := strings.TrimSpace(ws.Path); path != "" {
-		return path
+	if !temporary {
+		if path := strings.TrimSpace(ws.Path); path != "" {
+			return path
+		}
 	}
 	return strings.TrimSpace(sess.OriginalWorkspacePath)
 }

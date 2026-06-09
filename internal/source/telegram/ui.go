@@ -361,15 +361,27 @@ func startedTaskKeyboard(workspaceID int64, pinned bool, groupChatID int64, topi
 	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{row}}
 }
 
-func createdTopicKeyboard(sessionID string, gitWorkspace bool) inlineKeyboardMarkup {
-	runRow := []inlineKeyboardButton{
-		{Text: "Local", CallbackData: "runlocal:" + sessionID},
+func temporaryStartedTaskKeyboard(groupChatID int64, topicID int) inlineKeyboardMarkup {
+	if topicID == 0 {
+		return inlineKeyboardMarkup{}
 	}
-	if gitWorkspace {
-		runRow = append(runRow,
-			inlineKeyboardButton{Text: "Worktree", CallbackData: "runworktree:" + sessionID},
-			inlineKeyboardButton{Text: "Docker", CallbackData: "rundocker:" + sessionID},
-		)
+	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{{
+		{Text: "💬 Follow", URL: topicURL(groupChatID, topicID)},
+	}}}
+}
+
+func createdTopicKeyboard(sessionID string, gitWorkspace bool, temporary bool) inlineKeyboardMarkup {
+	var runRow []inlineKeyboardButton
+	if temporary {
+		runRow = []inlineKeyboardButton{{Text: "Docker", CallbackData: "rundocker:" + sessionID}}
+	} else {
+		runRow = []inlineKeyboardButton{{Text: "Local", CallbackData: "runlocal:" + sessionID}}
+		if gitWorkspace {
+			runRow = append(runRow,
+				inlineKeyboardButton{Text: "Worktree", CallbackData: "runworktree:" + sessionID},
+				inlineKeyboardButton{Text: "Docker", CallbackData: "rundocker:" + sessionID},
+			)
+		}
 	}
 	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
 		runRow,

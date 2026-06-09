@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +14,11 @@ import (
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/session"
 	"github.com/xiaot/pi-coordinator/internal/store"
+)
+
+const (
+	temporaryWorkspacePath = "pico://temporary-workspace"
+	temporaryWorkspaceName = "Temporary session"
 )
 
 // App is the core coordinator for pi.
@@ -151,6 +157,19 @@ func (a *App) IsManagedWorktreePath(path string) bool {
 	return len(path) > len(root) && path[:len(root)] == root && path[len(root)] == filepath.Separator
 }
 
+func (a *App) EnsureTemporaryWorkspace(ctx context.Context) (store.Workspace, error) {
+	ws, _, err := a.store.UpsertWorkspace(ctx, temporaryWorkspacePath, temporaryWorkspaceName)
+	return ws, err
+}
+
+func (a *App) IsTemporaryWorkspace(ws store.Workspace) bool {
+	return isTemporaryWorkspacePath(ws.Path)
+}
+
+func isTemporaryWorkspacePath(path string) bool {
+	return strings.TrimSpace(path) == temporaryWorkspacePath
+}
+
 func (a *App) CountSelectableWorkspaces(ctx context.Context) (int, error) {
 	workspaces, err := a.selectableWorkspaces(ctx)
 	if err != nil {
@@ -172,7 +191,7 @@ func (a *App) GetSelectableWorkspace(ctx context.Context, id int64) (store.Works
 	if err != nil {
 		return store.Workspace{}, err
 	}
-	if a.IsManagedWorktreePath(ws.Path) {
+	if a.IsManagedWorktreePath(ws.Path) || a.IsTemporaryWorkspace(ws) {
 		return store.Workspace{}, sql.ErrNoRows
 	}
 	return ws, nil
@@ -183,7 +202,7 @@ func (a *App) GetSelectableWorkspaceByPath(ctx context.Context, path string) (st
 	if err != nil {
 		return store.Workspace{}, err
 	}
-	if a.IsManagedWorktreePath(ws.Path) {
+	if a.IsManagedWorktreePath(ws.Path) || a.IsTemporaryWorkspace(ws) {
 		return store.Workspace{}, sql.ErrNoRows
 	}
 	return ws, nil
@@ -239,7 +258,7 @@ func (a *App) selectableWorkspaces(ctx context.Context) ([]store.Workspace, erro
 	}
 	out := make([]store.Workspace, 0, len(workspaces))
 	for _, ws := range workspaces {
-		if a.IsManagedWorktreePath(ws.Path) {
+		if a.IsManagedWorktreePath(ws.Path) || a.IsTemporaryWorkspace(ws) {
 			continue
 		}
 		out = append(out, ws)
@@ -307,12 +326,23 @@ func (a *App) HasDirtyChanges(ctx context.Context, ws store.Workspace) bool {
 
 func (a *App) prepareRunner(ctx context.Context, sess store.Session, ws store.Workspace, runnerType string, req runner.StartRequest) (store.Session, runner.Runner, error) {
 	runnerType = normalizedRunnerType(runnerType)
-	if err := a.store.SetSessionRunnerType(ctx, sess.ID, runnerType, ws.Path); err != nil {
+	temporary := a.IsTemporaryWorkspace(ws)
+	if temporary && runnerType != "docker" {
+		return sess, nil, fmt.Errorf("temporary sessions only support docker")
+	}
+	originalWorkspacePath := ws.Path
+	if temporary {
+		originalWorkspacePath = ""
+	}
+	if err := a.store.SetSessionRunnerType(ctx, sess.ID, runnerType, originalWorkspacePath); err != nil {
 		return sess, nil, err
 	}
 	sess.RunnerType = runnerType
 	if sess.OriginalWorkspacePath == "" {
-		sess.OriginalWorkspacePath = ws.Path
+		sess.OriginalWorkspacePath = originalWorkspacePath
+	}
+	if temporary {
+		return sess, a.docker, nil
 	}
 	switch runnerType {
 	case "local":
@@ -344,6 +374,9 @@ func (a *App) prepareRunner(ctx context.Context, sess store.Session, ws store.Wo
 }
 
 func runnerWorkspace(sess store.Session, ws store.Workspace) string {
+	if isTemporaryWorkspacePath(ws.Path) {
+		return ""
+	}
 	if normalizedRunnerType(sess.RunnerType) == "local" {
 		return ws.Path
 	}

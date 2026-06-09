@@ -383,14 +383,7 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 		startNewTask(ctx, b, msg.Chat, userID, ws.ID, text, images)
 		return
 	}
-	if !msg.Chat.IsPrivate() {
-		// General-topic prompts should be sent as regular group messages.
-		// Using message_thread_id for the General topic can trigger 400 Bad Request
-		// in some Telegram forum setups.
-		b.send(chatID, "Choose a workspace with /new or /workspace, or /pin one for quick sends.", nil)
-		return
-	}
-	b.send(chatID, "Choose a workspace first with /new or /workspace.", nil)
+	startTemporaryTask(ctx, b, msg.Chat, userID, text, images)
 }
 
 func promptForPendingInput(b *Bot, chat Chat, userID int64, pending PendingState, text string) {
@@ -487,7 +480,7 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 		Existing:  true,
 		Role:      genericRole,
 	}
-	rememberTraceRetry(b, msg.From.ID, "retry_resume_task", msg.Chat, 0, sess.ID, text, images)
+	rememberTraceRetry(b, msg.From.ID, "retry_resume_task", msg.Chat, 0, sess.ID, text, images, b.app.IsTemporaryWorkspace(ws))
 	if traceBot, err := b.ensureTraceBot(ctx, req.Role, msg.Chat.ID); err != nil {
 		return
 	} else {
@@ -497,7 +490,11 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 
 	runnerPrompt := appendImageContext(text, images)
 	if sess.RunnerType == "" && sess.FilePath == "" && sess.WorktreePath == "" {
-		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Choose Run Local, Run Worktree, or Run Docker before sending follow-ups.", nil)
+		message := "Choose Run Local, Run Worktree, or Run Docker before sending follow-ups."
+		if b.app.IsTemporaryWorkspace(ws) {
+			message = "Choose Run Docker before sending follow-ups."
+		}
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, message, nil)
 		return
 	}
 	if err := b.app.SteerSession(ctx, sess, ws, req, runnerPrompt, images); err != nil {
@@ -563,6 +560,10 @@ func handleTraceRetry(ctx context.Context, b *Bot, update Update) {
 	images := decodeImagesJSON(p.ImagesJSON)
 	switch p.Kind {
 	case "retry_new_task":
+		if p.Temporary {
+			startTemporaryTask(ctx, b, chat, q.From.ID, p.Prompt, images)
+			return
+		}
 		startNewTask(ctx, b, chat, q.From.ID, p.WorkspaceID, p.Prompt, images)
 	case "retry_resume_task":
 		resumeSession(ctx, b, chat, q.From.ID, p.SessionID, p.Prompt, images)
@@ -571,7 +572,7 @@ func handleTraceRetry(ctx context.Context, b *Bot, update Update) {
 	}
 }
 
-func rememberTraceRetry(b *Bot, userID int64, kind string, chat Chat, workspaceID int64, sessionID, prompt string, images []runner.ImageAttachment) {
+func rememberTraceRetry(b *Bot, userID int64, kind string, chat Chat, workspaceID int64, sessionID, prompt string, images []runner.ImageAttachment, temporary bool) {
 	b.setPending(userID, PendingState{
 		Kind:         kind,
 		WorkspaceID:  workspaceID,
@@ -580,6 +581,7 @@ func rememberTraceRetry(b *Bot, userID int64, kind string, chat Chat, workspaceI
 		ImagesJSON:   encodeImagesJSON(images),
 		TaskChatID:   chat.ID,
 		TaskChatType: chat.Type,
+		Temporary:    temporary,
 	})
 }
 
@@ -1081,10 +1083,21 @@ func createdTopicText(ctx context.Context, b *Bot, sess store.Session, ws store.
 		model = "pi default"
 	}
 	text += "\nModel: " + model
+	if b.app.IsTemporaryWorkspace(ws) {
+		text += "\nMode: Docker only (temporary session, no workspace mounted)."
+		return text
+	}
 	if b.app.IsGitWorkspace(ctx, ws) && b.app.HasDirtyChanges(ctx, ws) {
 		text += "\n\nWorktree and Docker will start from the current HEAD and will not include uncommitted changes in the original workspace."
 	}
 	return text
+}
+
+func sessionReplyKeyboard(b *Bot, userID int64, ws store.Workspace, topicID int) inlineKeyboardMarkup {
+	if b.app.IsTemporaryWorkspace(ws) {
+		return temporaryStartedTaskKeyboard(b.app.Config().Telegram.GroupChatID, topicID)
+	}
+	return startedTaskKeyboard(ws.ID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, topicID)
 }
 
 func restoreAwaitRunMode(ctx context.Context, b *Bot, userID, chatID int64, messageID int, p PendingState) {
@@ -1108,7 +1121,7 @@ func restoreAwaitRunMode(ctx context.Context, b *Bot, userID, chatID int64, mess
 		b.editMessageText(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
-	b.editMessageText(chatID, messageID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws)))
+	b.editMessageText(chatID, messageID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws), b.app.IsTemporaryWorkspace(ws)))
 }
 
 func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspaceID int64, prompt string, images []runner.ImageAttachment) {
@@ -1147,7 +1160,47 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 		TaskChatID:   chat.ID,
 		TaskChatType: chat.Type,
 	})
-	b.send(chatID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws)))
+	b.send(chatID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws), false))
+}
+
+func startTemporaryTask(ctx context.Context, b *Bot, chat Chat, userID int64, prompt string, images []runner.ImageAttachment) {
+	chatID := chat.ID
+	ws, err := b.app.EnsureTemporaryWorkspace(ctx)
+	if err != nil {
+		b.send(chatID, "Failed to prepare temporary session: "+err.Error(), nil)
+		return
+	}
+
+	title := topicTitle(prompt)
+	topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, title)
+	if err != nil {
+		b.send(chatID, "Failed to create topic: "+err.Error(), nil)
+		return
+	}
+
+	goalID, err := b.sendTopicMessage(b.app.Config().Telegram.GroupChatID, topicID, "🎯 "+prompt, nil)
+	if err == nil {
+		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
+	}
+
+	sess, err := b.app.Store().CreatePlaceholderSession(ctx, ws.ID, title)
+	if err != nil {
+		b.send(chatID, "Failed to create session: "+err.Error(), nil)
+		return
+	}
+	_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
+
+	b.setPending(userID, PendingState{
+		Kind:         "await_run_mode",
+		WorkspaceID:  ws.ID,
+		SessionID:    sess.ID,
+		Prompt:       prompt,
+		ImagesJSON:   encodeImagesJSON(images),
+		TaskChatID:   chat.ID,
+		TaskChatType: chat.Type,
+		Temporary:    true,
+	})
+	b.send(chatID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, false, true))
 }
 
 func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string) {
@@ -1177,7 +1230,13 @@ func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string
 		b.send(q.Message.Chat.ID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
-	if runnerType != "local" && !b.app.IsGitWorkspace(ctx, ws) {
+	temporary := b.app.IsTemporaryWorkspace(ws)
+	if temporary {
+		if runnerType != "docker" {
+			b.send(q.Message.Chat.ID, "Temporary sessions only support Docker.", nil)
+			return
+		}
+	} else if runnerType != "local" && !b.app.IsGitWorkspace(ctx, ws) {
 		b.send(q.Message.Chat.ID, "Worktree and Docker modes require a Git workspace with at least one commit.", nil)
 		return
 	}
@@ -1185,7 +1244,7 @@ func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string
 	if chat.ID == 0 {
 		chat = q.Message.Chat
 	}
-	rememberTraceRetry(b, q.From.ID, "retry_new_task", chat, ws.ID, sess.ID, p.Prompt, decodeImagesJSON(p.ImagesJSON))
+	rememberTraceRetry(b, q.From.ID, "retry_new_task", chat, ws.ID, sess.ID, p.Prompt, decodeImagesJSON(p.ImagesJSON), temporary)
 	traceBot, err := b.ensureTraceBot(ctx, genericRole, q.Message.Chat.ID)
 	if err != nil {
 		return
@@ -1209,10 +1268,12 @@ func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string
 	}
 	clearTraceRetry(b, q.From.ID)
 	text := "Started pi in " + runnerType + " mode."
-	if prepared.WorktreePath != "" {
+	if temporary {
+		text = "Started pi in temporary docker mode.\nWorkspace mount: disabled"
+	} else if prepared.WorktreePath != "" {
 		text += "\nWorktree: " + prepared.WorktreePath
 	}
-	b.send(q.Message.Chat.ID, text, startedTaskKeyboard(ws.ID, b.pinned(q.From.ID) == ws.Path, b.app.Config().Telegram.GroupChatID, sess.TopicID))
+	b.send(q.Message.Chat.ID, text, sessionReplyKeyboard(b, q.From.ID, ws, sess.TopicID))
 }
 
 func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, sessionID, prompt string, images []runner.ImageAttachment) {
@@ -1228,7 +1289,7 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 		return
 	}
 
-	rememberTraceRetry(b, userID, "retry_resume_task", chat, 0, sessionID, prompt, images)
+	rememberTraceRetry(b, userID, "retry_resume_task", chat, 0, sessionID, prompt, images, b.app.IsTemporaryWorkspace(ws))
 	traceBot, err := b.ensureTraceBot(ctx, genericRole, chatID)
 	if err != nil {
 		return
@@ -1263,5 +1324,5 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 		return
 	}
 	clearTraceRetry(b, userID)
-	b.send(chatID, "Sent to session.", startedTaskKeyboard(ws.ID, b.pinned(userID) == ws.Path, b.app.Config().Telegram.GroupChatID, sess.TopicID))
+	b.send(chatID, "Sent to session.", sessionReplyKeyboard(b, userID, ws, sess.TopicID))
 }

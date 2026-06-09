@@ -18,3 +18,29 @@ func TestStartedTaskKeyboardIncludesFollowButton(t *testing.T) {
 		t.Fatalf("unexpected follow URL: %q", row[0].URL)
 	}
 }
+
+func TestTemporaryStartedTaskKeyboardOnlyShowsFollow(t *testing.T) {
+	kb := temporaryStartedTaskKeyboard(-1001234567890, 321)
+	if len(kb.InlineKeyboard) != 1 || len(kb.InlineKeyboard[0]) != 1 {
+		t.Fatalf("unexpected keyboard shape: %+v", kb)
+	}
+	if got := kb.InlineKeyboard[0][0].Text; got != "💬 Follow" {
+		t.Fatalf("expected follow button, got %q", got)
+	}
+}
+
+func TestCreatedTopicKeyboardForTemporarySessionOnlyShowsDocker(t *testing.T) {
+	kb := createdTopicKeyboard("sess-1", false, true)
+	if len(kb.InlineKeyboard) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(kb.InlineKeyboard))
+	}
+	if len(kb.InlineKeyboard[0]) != 1 {
+		t.Fatalf("expected 1 run button, got %d", len(kb.InlineKeyboard[0]))
+	}
+	if got := kb.InlineKeyboard[0][0].Text; got != "Docker" {
+		t.Fatalf("expected Docker button, got %q", got)
+	}
+	if got := kb.InlineKeyboard[0][0].CallbackData; got != "rundocker:sess-1" {
+		t.Fatalf("unexpected callback: %q", got)
+	}
+}

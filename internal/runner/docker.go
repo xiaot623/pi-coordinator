@@ -195,9 +195,6 @@ func (d *Docker) ensure(ctx context.Context, req StartRequest) (*LocalProcess, b
 }
 
 func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string, error) {
-	if req.Workspace == "" {
-		return nil, errors.New("docker runner requires a worktree workspace")
-	}
 	if err := os.MkdirAll(d.opts.HostSessionDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -212,9 +209,15 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 			return nil, err
 		}
 	}
-	gitMounts, err := d.gitMounts(ctx, req.Workspace)
-	if err != nil {
-		return nil, err
+	var (
+		gitMounts []string
+		err       error
+	)
+	if req.Workspace != "" {
+		gitMounts, err = d.gitMounts(ctx, req.Workspace)
+		if err != nil {
+			return nil, err
+		}
 	}
 	piArgs, err := d.piArgs(ctx, req, true)
 	if err != nil {
@@ -229,7 +232,9 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 	if d.opts.Network != "" && d.opts.Network != "bridge" {
 		args = append(args, "--network", d.opts.Network)
 	}
-	args = append(args, "-v", req.Workspace+":"+req.Workspace+":rw")
+	if req.Workspace != "" {
+		args = append(args, "-v", req.Workspace+":"+req.Workspace+":rw")
+	}
 	if req.TraceTelegramToken != "" && len(req.TraceTelegramChatIDs) > 0 {
 		args = append(args,
 			"-e", "PI_TRACE_TELEGRAM_BOT_TOKEN="+req.TraceTelegramToken,
@@ -247,8 +252,12 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 	if d.opts.HostSkillsDir != "" {
 		args = append(args, "-v", d.opts.HostSkillsDir+":"+filepath.Join(d.opts.ContainerHome, ".agents", "skills")+":ro")
 	}
+	workdir := req.Workspace
+	if workdir == "" {
+		workdir = "/workspace"
+	}
 	args = append(args,
-		"-w", req.Workspace,
+		"-w", workdir,
 		"-i",
 		d.opts.Image,
 	)

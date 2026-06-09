@@ -40,6 +40,7 @@ type PendingState struct {
 	ImagesJSON       string // JSON-serialised []runner.ImageAttachment, for trace retry
 	TaskChatID       int64
 	TaskChatType     string
+	Temporary        bool
 	ModelScope       string
 	ModelID          string
 	Provider         string
