@@ -1076,13 +1076,14 @@ func appendImageContext(prompt string, images []runner.ImageAttachment) string {
 	return strings.TrimSpace(sb.String())
 }
 
-func createdTopicText(ctx context.Context, b *Bot, sess store.Session, ws store.Workspace) string {
-	text := fmt.Sprintf("Created topic: %s\nChoose how to run pi.", sess.Title)
+func awaitRunModeText(ctx context.Context, b *Bot, sess store.Session, ws store.Workspace) string {
+	text := fmt.Sprintf("Choose how to run pi.\nTopic: %s", sess.Title)
 	model := b.app.ResolveModel(sess, ws)
 	if model == "" {
 		model = "pi default"
 	}
 	text += "\nModel: " + model
+	text += "\nTopic will be created after you choose the run mode."
 	if b.app.IsTemporaryWorkspace(ws) {
 		text += "\nMode: Docker only (temporary session, no workspace mounted)."
 		return text
@@ -1091,6 +1092,30 @@ func createdTopicText(ctx context.Context, b *Bot, sess store.Session, ws store.
 		text += "\n\nWorktree and Docker will start from the current HEAD and will not include uncommitted changes in the original workspace."
 	}
 	return text
+}
+
+func ensureSessionTopic(ctx context.Context, b *Bot, sess store.Session, prompt string) (store.Session, error) {
+	if sess.TopicID != 0 {
+		return sess, nil
+	}
+	title := strings.TrimSpace(sess.Title)
+	if title == "" {
+		title = topicTitle(prompt)
+	}
+	topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, title)
+	if err != nil {
+		return sess, err
+	}
+	goalID, err := b.sendTopicMessage(b.app.Config().Telegram.GroupChatID, topicID, "🎯 "+prompt, nil)
+	if err == nil {
+		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
+	}
+	if err := b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID); err != nil {
+		return sess, err
+	}
+	sess.TopicID = topicID
+	sess.GoalMessageID = goalID
+	return sess, nil
 }
 
 func sessionReplyKeyboard(b *Bot, userID int64, ws store.Workspace, topicID int) inlineKeyboardMarkup {
@@ -1121,7 +1146,7 @@ func restoreAwaitRunMode(ctx context.Context, b *Bot, userID, chatID int64, mess
 		b.editMessageText(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
 		return
 	}
-	b.editMessageText(chatID, messageID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws), b.app.IsTemporaryWorkspace(ws)))
+	b.editMessageText(chatID, messageID, awaitRunModeText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws), b.app.IsTemporaryWorkspace(ws)))
 }
 
 func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspaceID int64, prompt string, images []runner.ImageAttachment) {
@@ -1133,23 +1158,11 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 	}
 
 	title := topicTitle(prompt)
-	topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, title)
-	if err != nil {
-		b.send(chatID, "Failed to create topic: "+err.Error(), nil)
-		return
-	}
-
-	goalID, err := b.sendTopicMessage(b.app.Config().Telegram.GroupChatID, topicID, "🎯 "+prompt, nil)
-	if err == nil {
-		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
-	}
-
 	sess, err := b.app.Store().CreatePlaceholderSession(ctx, workspaceID, title)
 	if err != nil {
 		b.send(chatID, "Failed to create session: "+err.Error(), nil)
 		return
 	}
-	_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
 
 	b.setPending(userID, PendingState{
 		Kind:         "await_run_mode",
@@ -1160,7 +1173,7 @@ func startNewTask(ctx context.Context, b *Bot, chat Chat, userID int64, workspac
 		TaskChatID:   chat.ID,
 		TaskChatType: chat.Type,
 	})
-	b.send(chatID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws), false))
+	b.send(chatID, awaitRunModeText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, b.app.IsGitWorkspace(ctx, ws), false))
 }
 
 func startTemporaryTask(ctx context.Context, b *Bot, chat Chat, userID int64, prompt string, images []runner.ImageAttachment) {
@@ -1172,23 +1185,11 @@ func startTemporaryTask(ctx context.Context, b *Bot, chat Chat, userID int64, pr
 	}
 
 	title := topicTitle(prompt)
-	topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, title)
-	if err != nil {
-		b.send(chatID, "Failed to create topic: "+err.Error(), nil)
-		return
-	}
-
-	goalID, err := b.sendTopicMessage(b.app.Config().Telegram.GroupChatID, topicID, "🎯 "+prompt, nil)
-	if err == nil {
-		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
-	}
-
 	sess, err := b.app.Store().CreatePlaceholderSession(ctx, ws.ID, title)
 	if err != nil {
 		b.send(chatID, "Failed to create session: "+err.Error(), nil)
 		return
 	}
-	_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
 
 	b.setPending(userID, PendingState{
 		Kind:         "await_run_mode",
@@ -1200,7 +1201,7 @@ func startTemporaryTask(ctx context.Context, b *Bot, chat Chat, userID int64, pr
 		TaskChatType: chat.Type,
 		Temporary:    true,
 	})
-	b.send(chatID, createdTopicText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, false, true))
+	b.send(chatID, awaitRunModeText(ctx, b, sess, ws), createdTopicKeyboard(sess.ID, false, true))
 }
 
 func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string) {
@@ -1249,6 +1250,11 @@ func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string
 	if err != nil {
 		return
 	}
+	sess, err = ensureSessionTopic(ctx, b, sess, p.Prompt)
+	if err != nil {
+		b.send(q.Message.Chat.ID, "Failed to create topic: "+err.Error(), nil)
+		return
+	}
 	req := runner.StartRequest{
 		SessionID: sess.ID,
 		Title:     displaySession(sess),
@@ -1295,16 +1301,10 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 		return
 	}
 
-	if sess.TopicID == 0 {
-		topicID, err := b.createForumTopic(b.app.Config().Telegram.GroupChatID, topicTitle(prompt))
-		if err != nil {
-			b.send(chatID, "Failed to create topic: "+err.Error(), nil)
-			return
-		}
-		goalID, _ := b.sendTopicMessage(b.app.Config().Telegram.GroupChatID, topicID, "🎯 "+prompt, nil)
-		_ = b.pinChatMessage(b.app.Config().Telegram.GroupChatID, goalID)
-		_ = b.app.Store().SetSessionTopic(ctx, sess.ID, topicID, goalID)
-		sess.TopicID = topicID
+	sess, err = ensureSessionTopic(ctx, b, sess, prompt)
+	if err != nil {
+		b.send(chatID, "Failed to create topic: "+err.Error(), nil)
+		return
 	}
 
 	req := runner.StartRequest{
