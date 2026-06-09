@@ -14,6 +14,7 @@ import (
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/session"
 	"github.com/xiaot/pi-coordinator/internal/store"
+	"github.com/xiaot/pi-coordinator/internal/todos"
 )
 
 const (
@@ -28,6 +29,7 @@ type App struct {
 	paths  config.Paths
 	log    *slog.Logger
 	store  *store.Store
+	todos  *todos.Store
 	local  runner.Runner
 	work   runner.Runner
 	docker runner.Runner
@@ -37,6 +39,11 @@ type App struct {
 func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, error) {
 	st, err := store.Open(paths.DBPath)
 	if err != nil {
+		return nil, err
+	}
+	todoStore, err := todos.Open(filepath.Join(filepath.Dir(paths.ConfigPath), "todos.json"))
+	if err != nil {
+		_ = st.Close()
 		return nil, err
 	}
 	pluginDir := filepath.Join(paths.DataDir, "agent")
@@ -79,6 +86,7 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		paths:  paths,
 		log:    logger,
 		store:  st,
+		todos:  todoStore,
 		local:  rm,
 		work:   work,
 		docker: docker,
@@ -91,11 +99,12 @@ func (a *App) Close() {
 	a.store.Close()
 }
 
-func (a *App) Store() *store.Store   { return a.store }
-func (a *App) Runner() runner.Runner { return a.local }
-func (a *App) Config() config.Config { return *a.cfg }
-func (a *App) Paths() config.Paths   { return a.paths }
-func (a *App) Logger() *slog.Logger  { return a.log }
+func (a *App) Store() *store.Store     { return a.store }
+func (a *App) TodoStore() *todos.Store { return a.todos }
+func (a *App) Runner() runner.Runner   { return a.local }
+func (a *App) Config() config.Config   { return *a.cfg }
+func (a *App) Paths() config.Paths     { return a.paths }
+func (a *App) Logger() *slog.Logger    { return a.log }
 
 // UpdateConfig updates the in-memory config safely.
 func (a *App) UpdateConfig(cfg config.Config) {

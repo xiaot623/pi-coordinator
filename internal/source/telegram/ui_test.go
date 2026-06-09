@@ -44,3 +44,14 @@ func TestCreatedTopicKeyboardForTemporarySessionOnlyShowsDocker(t *testing.T) {
 		t.Fatalf("unexpected callback: %q", got)
 	}
 }
+
+func TestTodoWorkspaceKeyRoundTrip(t *testing.T) {
+	id, temporary, ok := parseTodoWorkspaceKey(todoWorkspaceKey(42, false))
+	if !ok || temporary || id != 42 {
+		t.Fatalf("unexpected normal workspace parse: id=%d temporary=%v ok=%v", id, temporary, ok)
+	}
+	id, temporary, ok = parseTodoWorkspaceKey(todoWorkspaceKey(0, true))
+	if !ok || !temporary || id != 0 {
+		t.Fatalf("unexpected temporary workspace parse: id=%d temporary=%v ok=%v", id, temporary, ok)
+	}
+}

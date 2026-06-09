@@ -12,13 +12,16 @@ import (
 
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/store"
+	"github.com/xiaot/pi-coordinator/internal/todos"
 )
 
 const (
 	workspacePageSize    = 10
 	sessionPageSize      = 8
+	todoPageSize         = 8
 	addWorkspacePageSize = 8
 	pinnedOnPrefix       = "Pinned on "
+	todoTemporaryKey     = "tmp"
 )
 
 // -- UI Formatting --
@@ -76,6 +79,105 @@ func sendSessions(ctx context.Context, b *Bot, chatID int64, messageID int, work
 		inlineKeyboardButton{Text: "📌 Pin", CallbackData: "wspin:" + id},
 	))
 	b.sendOrEdit(chatID, messageID, "Choose a session:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func sendTodoWorkspaces(ctx context.Context, b *Bot, chatID int64, messageID int, page int) {
+	count, err := b.app.CountSelectableWorkspaces(ctx)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read workspaces: "+err.Error(), nil)
+		return
+	}
+	total := count + 1
+	page = clampPage(page, total, workspacePageSize)
+	limit := workspacePageSize
+	offset := 0
+	includeTemporary := page == 0
+	if includeTemporary {
+		limit--
+	} else {
+		offset = page*workspacePageSize - 1
+	}
+	workspaces, err := b.app.ListSelectableWorkspaces(ctx, limit, offset)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read workspaces: "+err.Error(), nil)
+		return
+	}
+	var rows [][]inlineKeyboardButton
+	if includeTemporary {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "temporary", CallbackData: "todo:ws:" + todoWorkspaceKey(0, true)}))
+	}
+	for i := 0; i < len(workspaces); i += 2 {
+		var buttons []inlineKeyboardButton
+		for _, ws := range workspaces[i:min(i+2, len(workspaces))] {
+			buttons = append(buttons, inlineKeyboardButton{Text: workspaceLabel(ws), CallbackData: "todo:ws:" + todoWorkspaceKey(ws.ID, false)})
+		}
+		rows = append(rows, buttons)
+	}
+	rows = appendPageNav(rows, page, total, workspacePageSize, "todo:wp:")
+	b.sendOrEdit(chatID, messageID, "Choose a workspace for todos:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func sendTodoList(ctx context.Context, b *Bot, chatID int64, messageID int, workspaceID int64, temporary bool, page int) {
+	workspaceName, err := todoWorkspaceName(ctx, b, workspaceID, temporary)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	workspaceKind := ""
+	if temporary {
+		workspaceKind = todos.WorkspaceKindTemporary
+	}
+	items, err := b.app.TodoStore().ListByWorkspace(workspaceID, workspaceKind)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read todos: "+err.Error(), nil)
+		return
+	}
+	page = clampPage(page, len(items), todoPageSize)
+	start := page * todoPageSize
+	end := min(start+todoPageSize, len(items))
+	var pageItems []todos.Item
+	if start < len(items) {
+		pageItems = items[start:end]
+	}
+	workspaceKey := todoWorkspaceKey(workspaceID, temporary)
+	var rows [][]inlineKeyboardButton
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "➕ Add Todo", CallbackData: "todo:add:" + workspaceKey}))
+	for _, item := range pageItems {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: todoTitleLabel(item.Title), CallbackData: "todo:item:" + item.ID + ":" + strconv.Itoa(page)}))
+	}
+	rows = appendPageNav(rows, page, len(items), todoPageSize, "todo:list:"+workspaceKey+":")
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "⬅️ Workspaces", CallbackData: "todo:wp:0"}))
+	text := "Todos · " + workspaceName
+	if len(items) == 0 {
+		text += "\n\nNo todos yet."
+		if temporary {
+			text += " New sessions from this workspace will use temporary docker mode without mounting a real workspace."
+		}
+	}
+	b.sendOrEdit(chatID, messageID, text, inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func sendTodoItemDetail(ctx context.Context, b *Bot, chatID int64, messageID int, item todos.Item, page int) {
+	workspaceName, err := todoWorkspaceName(ctx, b, item.WorkspaceID, item.IsTemporary())
+	if err != nil {
+		workspaceName = "workspace unavailable"
+	}
+	workspaceKey := todoWorkspaceKey(item.WorkspaceID, item.IsTemporary())
+	text := strings.TrimSpace(item.Detail)
+	if text == "" {
+		text = item.Title
+	}
+	body := "Workspace: " + workspaceName + "\nUpdated: " + item.UpdatedAt.Local().Format("2006-01-02 15:04") + "\n\n" + text
+	b.sendOrEdit(chatID, messageID, body, inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
+		inlineKeyboardRow(
+			inlineKeyboardButton{Text: "🆕 New Session", CallbackData: "todo:new:" + item.ID},
+			inlineKeyboardButton{Text: "✏️ Edit", CallbackData: "todo:edit:" + item.ID + ":" + strconv.Itoa(page)},
+		),
+		inlineKeyboardRow(
+			inlineKeyboardButton{Text: "🗑 Delete", CallbackData: "todo:del:" + item.ID + ":" + strconv.Itoa(page)},
+			inlineKeyboardButton{Text: "⬅️ Back", CallbackData: "todo:back:" + workspaceKey + ":" + strconv.Itoa(page)},
+		),
+	}})
 }
 
 func startAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, messageID int, userID int64) {
@@ -230,6 +332,54 @@ func workspaceLabel(ws store.Workspace) string {
 		label = string([]rune(label)[:24])
 	}
 	return label
+}
+
+func todoWorkspaceKey(workspaceID int64, temporary bool) string {
+	if temporary {
+		return todoTemporaryKey
+	}
+	return strconv.FormatInt(workspaceID, 10)
+}
+
+func parseTodoWorkspaceKey(raw string) (workspaceID int64, temporary bool, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == todoTemporaryKey {
+		return 0, true, true
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false, false
+	}
+	return id, false, true
+}
+
+func todoWorkspaceName(ctx context.Context, b *Bot, workspaceID int64, temporary bool) (string, error) {
+	if temporary {
+		return "temporary", nil
+	}
+	ws, err := b.app.GetSelectableWorkspace(ctx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if ws.Name != "" && ws.Name != filepath.Base(ws.Path) {
+		return ws.Name + " (" + ws.Path + ")", nil
+	}
+	if ws.Path != "" {
+		return ws.Path, nil
+	}
+	return workspaceLabel(ws), nil
+}
+
+func todoTitleLabel(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Untitled Todo"
+	}
+	runes := []rune(title)
+	if len(runes) > 48 {
+		return string(runes[:48]) + "…"
+	}
+	return title
 }
 
 type childDirectory struct {

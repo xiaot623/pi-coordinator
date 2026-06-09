@@ -10,6 +10,7 @@ import (
 	"github.com/xiaot/pi-coordinator/internal/gitops"
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/store"
+	"github.com/xiaot/pi-coordinator/internal/todos"
 )
 
 // registerHandlers sets up all routes for the Telegram bot.
@@ -20,6 +21,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("workspace", handleWorkspaceCmd)
 	b.router.Command("add", handleAddCmd)
 	b.router.Command("new", handleNewCmd)
+	b.router.Command("todo", handleTodoCmd)
 	b.router.Command("status", handleStatusCmd)
 	b.router.Command("stop", handleStopCmd)
 	b.router.Command("open", handleOpenCmd)
@@ -65,6 +67,15 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("add:toggle", handleAddToggle)
 	b.router.Callback("add:page:", handleAddPage)
 	b.router.Callback("add:open:", handleAddOpen)
+	b.router.Callback("todo:wp:", handleTodoWorkspacePage)
+	b.router.Callback("todo:ws:", handleTodoWorkspace)
+	b.router.Callback("todo:list:", handleTodoListPage)
+	b.router.Callback("todo:add:", handleTodoAdd)
+	b.router.Callback("todo:item:", handleTodoItem)
+	b.router.Callback("todo:new:", handleTodoNewSession)
+	b.router.Callback("todo:edit:", handleTodoEdit)
+	b.router.Callback("todo:del:", handleTodoDelete)
+	b.router.Callback("todo:back:", handleTodoBack)
 
 	b.router.Callback("ns:", handleNewSessionCallback)
 	b.router.Callback("runmodel:", handleRunModel)
@@ -122,6 +133,11 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 	}
 	b.setPending(update.Message.From.ID, PendingState{Kind: "new_prompt", Prompt: prompt})
 	sendWorkspaces(ctx, b, update.Message.Chat.ID, 0, "Choose a workspace:", "newws:", 0)
+}
+
+func handleTodoCmd(ctx context.Context, b *Bot, update Update) {
+	b.clearPending(update.Message.From.ID)
+	sendTodoWorkspaces(ctx, b, update.Message.Chat.ID, 0, 0)
 }
 
 func handleOpenCmd(ctx context.Context, b *Bot, update Update) {
@@ -371,6 +387,14 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 			b.clearPending(userID)
 			resumeSession(ctx, b, msg.Chat, userID, p.SessionID, text, images)
 			return
+		case "await_todo_add":
+			b.clearPending(userID)
+			createTodoFromPending(ctx, b, msg.Chat.ID, p, text)
+			return
+		case "await_todo_edit":
+			b.clearPending(userID)
+			updateTodoFromPending(ctx, b, msg.Chat.ID, p, text)
+			return
 		}
 	}
 
@@ -434,6 +458,30 @@ func promptForPinnedNewTask(b *Bot, chat Chat, ws store.Workspace) {
 	if _, err := b.sendMessage(chat.ID, 0, text, nil); err != nil {
 		b.app.Logger().Warn("telegram send failed", "error", err)
 	}
+}
+
+func createTodoFromPending(ctx context.Context, b *Bot, chatID int64, p PendingState, text string) {
+	workspaceKind := ""
+	workspaceID := p.WorkspaceID
+	if p.Temporary {
+		workspaceKind = todos.WorkspaceKindTemporary
+		workspaceID = 0
+	}
+	item, err := b.app.TodoStore().Create(workspaceID, workspaceKind, text)
+	if err != nil {
+		b.send(chatID, "Failed to create todo: "+err.Error(), nil)
+		return
+	}
+	sendTodoItemDetail(ctx, b, p.TaskChatID, p.MessageID, item, p.Page)
+}
+
+func updateTodoFromPending(ctx context.Context, b *Bot, chatID int64, p PendingState, text string) {
+	item, err := b.app.TodoStore().Update(p.TodoID, text)
+	if err != nil {
+		b.send(chatID, "Failed to update todo: "+err.Error(), nil)
+		return
+	}
+	sendTodoItemDetail(ctx, b, p.TaskChatID, p.MessageID, item, p.Page)
 }
 
 func refreshTopicGoalPin(ctx context.Context, b *Bot, sess store.Session, msg *Message) {
@@ -925,6 +973,154 @@ func handleAddOpen(ctx context.Context, b *Bot, update Update) {
 		return
 	}
 	sendAddWorkspaceBrowser(ctx, b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, dirs[absoluteIndex].Path, 0, p.BrowseShowHidden)
+}
+
+func handleTodoWorkspacePage(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	page, _ := strconv.Atoi(strings.TrimPrefix(q.Data, "todo:wp:"))
+	sendTodoWorkspaces(ctx, b, q.Message.Chat.ID, q.Message.MessageID, page)
+}
+
+func handleTodoWorkspace(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	workspaceID, temporary, ok := parseTodoWorkspaceKey(strings.TrimPrefix(q.Data, "todo:ws:"))
+	if !ok {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo workspace is unavailable.", nil)
+		return
+	}
+	sendTodoList(ctx, b, q.Message.Chat.ID, q.Message.MessageID, workspaceID, temporary, 0)
+}
+
+func handleTodoListPage(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	payload := strings.TrimPrefix(q.Data, "todo:list:")
+	parts := strings.Split(payload, ":")
+	if len(parts) != 2 {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo list expired. Send /todo again.", nil)
+		return
+	}
+	workspaceID, temporary, ok := parseTodoWorkspaceKey(parts[0])
+	if !ok {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo workspace is unavailable.", nil)
+		return
+	}
+	page, _ := strconv.Atoi(parts[1])
+	sendTodoList(ctx, b, q.Message.Chat.ID, q.Message.MessageID, workspaceID, temporary, page)
+}
+
+func handleTodoAdd(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	workspaceID, temporary, ok := parseTodoWorkspaceKey(strings.TrimPrefix(q.Data, "todo:add:"))
+	if !ok {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo workspace is unavailable.", nil)
+		return
+	}
+	prompt := "Send the todo content. The first line becomes the title."
+	if !q.Message.Chat.IsPrivate() && q.Message.MessageThreadID != 0 && q.Message.MessageThreadID != generalTopicThreadID {
+		prompt = "Send the todo content in General Topic or private chat. The first line becomes the title."
+	}
+	pending := PendingState{
+		Kind:        "await_todo_add",
+		WorkspaceID: workspaceID,
+		Temporary:   temporary,
+		TaskChatID:  q.Message.Chat.ID,
+		MessageID:   q.Message.MessageID,
+		Page:        0,
+	}
+	promptForPendingInput(b, q.Message.Chat, q.From.ID, pending, prompt)
+}
+
+func handleTodoItem(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	payload := strings.TrimPrefix(q.Data, "todo:item:")
+	parts := strings.Split(payload, ":")
+	if len(parts) != 2 {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo item expired. Send /todo again.", nil)
+		return
+	}
+	page, _ := strconv.Atoi(parts[1])
+	item, err := b.app.TodoStore().Get(parts[0])
+	if err != nil {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read todo: "+err.Error(), nil)
+		return
+	}
+	sendTodoItemDetail(ctx, b, q.Message.Chat.ID, q.Message.MessageID, item, page)
+}
+
+func handleTodoNewSession(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	item, err := b.app.TodoStore().Get(strings.TrimPrefix(q.Data, "todo:new:"))
+	if err != nil {
+		b.send(q.Message.Chat.ID, "Failed to read todo: "+err.Error(), nil)
+		return
+	}
+	if item.IsTemporary() {
+		startTemporaryTask(ctx, b, q.Message.Chat, q.From.ID, item.Detail, nil)
+		return
+	}
+	startNewTask(ctx, b, q.Message.Chat, q.From.ID, item.WorkspaceID, item.Detail, nil)
+}
+
+func handleTodoEdit(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	payload := strings.TrimPrefix(q.Data, "todo:edit:")
+	parts := strings.Split(payload, ":")
+	if len(parts) != 2 {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo item expired. Send /todo again.", nil)
+		return
+	}
+	page, _ := strconv.Atoi(parts[1])
+	item, err := b.app.TodoStore().Get(parts[0])
+	if err != nil {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to read todo: "+err.Error(), nil)
+		return
+	}
+	prompt := "Send the updated todo content. The first line becomes the title.\n\nCurrent content:\n" + item.Detail
+	if !q.Message.Chat.IsPrivate() && q.Message.MessageThreadID != 0 && q.Message.MessageThreadID != generalTopicThreadID {
+		prompt = "Send the updated todo content in General Topic or private chat. The first line becomes the title.\n\nCurrent content:\n" + item.Detail
+	}
+	pending := PendingState{
+		Kind:       "await_todo_edit",
+		TodoID:     item.ID,
+		TaskChatID: q.Message.Chat.ID,
+		MessageID:  q.Message.MessageID,
+		Page:       page,
+	}
+	promptForPendingInput(b, q.Message.Chat, q.From.ID, pending, prompt)
+}
+
+func handleTodoDelete(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	payload := strings.TrimPrefix(q.Data, "todo:del:")
+	parts := strings.Split(payload, ":")
+	if len(parts) != 2 {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo item expired. Send /todo again.", nil)
+		return
+	}
+	page, _ := strconv.Atoi(parts[1])
+	item, err := b.app.TodoStore().Delete(parts[0])
+	if err != nil {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Failed to delete todo: "+err.Error(), nil)
+		return
+	}
+	sendTodoList(ctx, b, q.Message.Chat.ID, q.Message.MessageID, item.WorkspaceID, item.IsTemporary(), page)
+}
+
+func handleTodoBack(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	payload := strings.TrimPrefix(q.Data, "todo:back:")
+	parts := strings.Split(payload, ":")
+	if len(parts) != 2 {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo list expired. Send /todo again.", nil)
+		return
+	}
+	workspaceID, temporary, ok := parseTodoWorkspaceKey(parts[0])
+	if !ok {
+		b.editMessageText(q.Message.Chat.ID, q.Message.MessageID, "Todo workspace is unavailable.", nil)
+		return
+	}
+	page, _ := strconv.Atoi(parts[1])
+	sendTodoList(ctx, b, q.Message.Chat.ID, q.Message.MessageID, workspaceID, temporary, page)
 }
 
 func handleNewSessionCallback(ctx context.Context, b *Bot, update Update) {

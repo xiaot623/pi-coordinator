@@ -48,6 +48,9 @@ type PendingState struct {
 	BrowsePath       string
 	BrowsePage       int
 	BrowseShowHidden bool
+	TodoID           string
+	MessageID        int
+	Page             int
 }
 
 func NewBot(a *app.App) *Bot {
@@ -250,6 +253,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{"command": "workspace", "description": "Choose a workspace and session"},
 			{"command": "add", "description": "Add a workspace"},
 			{"command": "new", "description": "Start a new task"},
+			{"command": "todo", "description": "Manage saved todos"},
 			{"command": "status", "description": "List active sessions"},
 			{"command": "detail", "description": "Show current path, mode, model, and git summary"},
 			{"command": "stop", "description": "Force-stop the current session topic"},
