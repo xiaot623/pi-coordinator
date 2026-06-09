@@ -222,7 +222,7 @@ func renderDetailOverview(ctx context.Context, scope detailScope) (string, error
 	gitSummary := detailValue(result.Values["GIT_SUMMARY"], "-")
 	systemSummary := detailValue(result.Values["SYSTEM_SUMMARY"], "-")
 	lines := []string{
-		"Detail · 总览",
+		"Detail · Overview",
 		"",
 		"Context: " + detailValue(scope.Context, "-"),
 		"Path: " + detailDisplayPath(scope.Path),
@@ -344,9 +344,9 @@ func detailValue(value, fallback string) string {
 
 func detailKeyboard(current string) inlineKeyboardMarkup {
 	return inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{{
-		{Text: detailTabButtonLabel(current, detailTabOverview, "总览"), CallbackData: "detail:" + detailTabOverview},
+		{Text: detailTabButtonLabel(current, detailTabOverview, "Overview"), CallbackData: "detail:" + detailTabOverview},
 		{Text: detailTabButtonLabel(current, detailTabGit, "Git"), CallbackData: "detail:" + detailTabGit},
-		{Text: "刷新", CallbackData: "detail:refresh:" + current},
+		{Text: "Refresh", CallbackData: "detail:refresh:" + current},
 	}}}
 }
 
