@@ -2,11 +2,17 @@ package telegram
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
+	"github.com/xiaot/pi-coordinator/internal/diff"
 	"github.com/xiaot/pi-coordinator/internal/gitops"
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/store"
@@ -32,6 +38,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("unpin", handleUnpin)
 	b.router.Command("model", handleModelCmd)
 	b.router.Command("bots", handleBotsCmd)
+	b.router.Command("diff", handleDiffCmd)
 
 	// Generic text messages
 	b.router.Text(handlePrivateMessage)
@@ -215,6 +222,118 @@ func handleCommitCmd(ctx context.Context, b *Bot, update Update) {
 		text += "\nCreated a new commit from current worktree changes."
 	}
 	b.sendMessage(msg.Chat.ID, msg.MessageThreadID, text, nil)
+}
+
+func handleDiffCmd(ctx context.Context, b *Bot, update Update) {
+	msg := update.Message
+	sess, _, ok := gitSessionCommandContext(ctx, b, msg, "/diff")
+	if !ok {
+		return
+	}
+
+	// Parse arguments (e.g., /diff HEAD~3, /diff main, /diff --staged)
+	args := strings.TrimSpace(msg.CommandArguments())
+
+	// Run git diff
+	result, err := gitops.Run(ctx, "diff.sh", map[string]string{
+		"PI_WORKTREE_PATH": sess.WorktreePath,
+		"PI_DIFF_ARGS":     args,
+	})
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Git diff failed: "+err.Error(), nil)
+		return
+	}
+
+	diffOutput := strings.TrimSpace(result.Stdout)
+	if diffOutput == "" {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "No changes to display.", nil)
+		return
+	}
+
+	// Generate random suffix for filename
+	randBytes := make([]byte, 4)
+	if _, err := rand.Read(randBytes); err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to generate filename: "+err.Error(), nil)
+		return
+	}
+	randSuffix := hex.EncodeToString(randBytes)
+
+	// Create temp file
+	filename := fmt.Sprintf("diff-%s-%s.html", sess.ID[:8], randSuffix)
+	tmpPath := filepath.Join(os.TempDir(), filename)
+
+	// Render HTML
+	htmlBytes, err := diff.RenderHTML(diffOutput, diff.RenderOptions{
+		SessionID:    sess.ID,
+		Branch:       sess.WorktreeBranch,
+		WorktreePath: sess.WorktreePath,
+	})
+	if err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to render diff: "+err.Error(), nil)
+		return
+	}
+
+	// Write to file
+	if err := os.WriteFile(tmpPath, htmlBytes, 0644); err != nil {
+		b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to write diff file: "+err.Error(), nil)
+		return
+	}
+
+	// Deliver based on config
+	delivery := b.app.Config().Diff.Delivery
+	if delivery == "" {
+		delivery = "send"
+	}
+
+	caption := fmt.Sprintf("Diff: %s", sess.ID[:8])
+	if sess.WorktreeBranch != "" {
+		caption += " @ " + sess.WorktreeBranch
+	}
+	if args != "" {
+		caption += "\n" + args
+	}
+
+	sent := false
+	opened := false
+
+	// Send to Telegram
+	if delivery == "send" || delivery == "all" {
+		if err := b.sendDocument(msg.Chat.ID, msg.MessageThreadID, filename, htmlBytes, caption); err != nil {
+			b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to send diff: "+err.Error(), nil)
+		} else {
+			sent = true
+		}
+	}
+
+	// Open in browser
+	if delivery == "open" || delivery == "all" {
+		var cmd *exec.Cmd
+		if runtime.GOOS == "darwin" {
+			cmd = exec.Command("open", tmpPath)
+		} else if runtime.GOOS == "linux" {
+			cmd = exec.Command("xdg-open", tmpPath)
+		} else {
+			cmd = exec.Command("start", tmpPath)
+		}
+		if err := cmd.Run(); err != nil {
+			b.sendMessage(msg.Chat.ID, msg.MessageThreadID, "Failed to open diff: "+err.Error(), nil)
+		} else {
+			opened = true
+		}
+	}
+
+	// Report result
+	var statusMsg string
+	if sent && opened {
+		statusMsg = "Diff sent and opened."
+	} else if sent {
+		statusMsg = "Diff sent to Telegram."
+	} else if opened {
+		statusMsg = fmt.Sprintf("Diff opened in browser: %s", tmpPath)
+	} else {
+		statusMsg = "Diff generated but delivery failed."
+	}
+	b.sendMessage(msg.Chat.ID, msg.MessageThreadID, statusMsg, nil)
 }
 
 func sessionTopicCommandContext(ctx context.Context, b *Bot, msg *Message, command string) (store.Session, store.Workspace, bool) {

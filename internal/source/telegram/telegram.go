@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync"
@@ -265,6 +266,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{"command": "unpin", "description": "Clear the pinned workspace"},
 			{"command": "model", "description": "Configure model settings"},
 			{"command": "bots", "description": "Show managed role bots"},
+			{"command": "diff", "description": "Generate HTML diff view of current changes"},
 		},
 	}, &resp, 20*time.Second)
 	if err != nil {
@@ -365,6 +367,62 @@ func (b *Bot) createForumTopic(chatID int64, name string) (int, error) {
 
 func (b *Bot) sendTopicMessage(chatID int64, topicID int, text string, replyMarkup any) (int, error) {
 	return b.sendMessage(chatID, topicID, text, replyMarkup)
+}
+
+// sendDocument uploads a file as a document to a chat/topic via multipart form.
+func (b *Bot) sendDocument(chatID int64, topicID int, filename string, data []byte, caption string) error {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	addField := func(name, value string) {
+		_ = writer.WriteField(name, value)
+	}
+	addField("chat_id", fmt.Sprintf("%d", chatID))
+	if topicID != 0 {
+		addField("message_thread_id", fmt.Sprintf("%d", topicID))
+	}
+	if caption != "" {
+		addField("caption", caption)
+	}
+
+	part, err := writer.CreateFormFile("document", filename)
+	if err != nil {
+		return fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return fmt.Errorf("write document data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	url := "https://api.telegram.org/bot" + b.app.Config().Telegram.BotToken + "/sendDocument"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram sendDocument returned %s", resp.Status)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return errors.New(result.Description)
+	}
+	return nil
 }
 
 func (b *Bot) pinChatMessage(chatID int64, messageID int) error {

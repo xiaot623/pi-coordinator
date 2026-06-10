@@ -25,3 +25,6 @@ runner:
 
 open_tool: "iterm2"
 global_model: ""
+
+diff:
+  delivery: send  # send | open | all

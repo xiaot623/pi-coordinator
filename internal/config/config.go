@@ -35,6 +35,9 @@ type Config struct {
 	} `yaml:"runner"`
 	OpenTool    string `yaml:"open_tool"`
 	GlobalModel string `yaml:"global_model"`
+	Diff        struct {
+		Delivery string `yaml:"delivery"` // send | open | all
+	} `yaml:"diff"`
 }
 
 type RunnerConfig struct {
@@ -102,6 +105,7 @@ func Load() (Config, Paths, error) {
 	cfg.Plugins = append([]string(nil), defaultPlugins...)
 	cfg.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 	cfg.OpenTool = "iterm2"
+	cfg.Diff.Delivery = "send"
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, paths, err
 	}
@@ -114,6 +118,9 @@ func Load() (Config, Paths, error) {
 	}
 	if cfg.OpenTool == "" {
 		cfg.OpenTool = "iterm2"
+	}
+	if cfg.Diff.Delivery == "" {
+		cfg.Diff.Delivery = "send"
 	}
 	if cfg.Telegram.BotToken == "" || cfg.Telegram.GroupChatID == 0 || len(cfg.Telegram.AllowedUsers) == 0 {
 		return Config{}, paths, fmt.Errorf("telegram.bot_token, telegram.group_chat_id, and telegram.allowed_users are required in %s", paths.ConfigPath)
@@ -206,6 +213,7 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					cfg.Plugins = append([]string(nil), defaultPlugins...)
 					cfg.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
 					cfg.OpenTool = "iterm2"
+					cfg.Diff.Delivery = "send"
 					if err := yaml.Unmarshal(data, &cfg); err != nil {
 						onChange(Config{}, err)
 						continue
@@ -219,6 +227,9 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 					}
 					if cfg.OpenTool == "" {
 						cfg.OpenTool = "iterm2"
+					}
+					if cfg.Diff.Delivery == "" {
+						cfg.Diff.Delivery = "send"
 					}
 					onChange(cfg, nil)
 				}

@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css">
+    <style>
+        /* ══════════════════════════════════════════════════════════
+           Design Tokens — GitHub-aligned palette
+           ══════════════════════════════════════════════════════════ */
+        :root {
+            --bg-page: #f6f8fa;
+            --bg-canvas: #ffffff;
+            --bg-inset: #f6f8fa;
+            --bg-overlay: #ffffff;
+            --text-primary: #1f2328;
+            --text-secondary: #656d76;
+            --text-tertiary: #8b949e;
+            --border-default: #d0d7de;
+            --border-muted: #d8dee4;
+            --accent-fg: #0969da;
+            --fg-success: #1a7f37;
+            --fg-danger: #cf222e;
+            --bg-success: #dafbe1;
+            --bg-danger: #ffebe9;
+            --header-bg: #24292f;
+            --header-fg: #ffffff;
+            --header-border: #57606a;
+            --knob-bg: #d0d7de;
+            --knob-fg: #ffffff;
+            --shadow-sm: 0 1px 0 rgba(31,35,40,0.04);
+            --shadow-md: 0 3px 6px rgba(31,35,40,0.08);
+            --shadow-lg: 0 8px 24px rgba(31,35,40,0.12);
+            --radius: 6px;
+        }
+
+        [data-theme="dark"] {
+            --bg-page: #010409;
+            --bg-canvas: #0d1117;
+            --bg-inset: #161b22;
+            --bg-overlay: #1c2128;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-tertiary: #6e7681;
+            --border-default: #30363d;
+            --border-muted: #21262d;
+            --accent-fg: #58a6ff;
+            --fg-success: #3fb950;
+            --fg-danger: #f85149;
+            --bg-success: rgba(46,160,67,0.15);
+            --bg-danger: rgba(248,81,73,0.1);
+            --header-bg: #161b22;
+            --header-fg: #f0f6fc;
+            --header-border: #30363d;
+            --knob-bg: #30363d;
+            --knob-fg: #f0f6fc;
+            --shadow-sm: 0 1px 0 rgba(0,0,0,0.2);
+            --shadow-md: 0 3px 6px rgba(0,0,0,0.3);
+            --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+        }
+
+        /* ── Reset ── */
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        /* ── Page ── */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+                         Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            background: var(--bg-page);
+            color: var(--text-primary);
+            min-height: 100vh;
+            transition: background 0.2s, color 0.2s;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ══════════════════════════════════════════════════════════
+           Header / Navbar — GitHub style dark header
+           ══════════════════════════════════════════════════════════ */
+        .header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: var(--header-bg);
+            border-bottom: 1px solid var(--header-border);
+            padding: 0 24px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+        .header-icon {
+            width: 24px; height: 24px;
+            display: flex; align-items: center; justify-content: center;
+            color: var(--header-fg);
+            flex-shrink: 0;
+        }
+        .header-icon svg { width: 20px; height: 20px; fill: currentColor; }
+        .header-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--header-fg);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .header-sep {
+            color: var(--header-border);
+            margin: 0 2px;
+            user-select: none;
+        }
+        .header-branch {
+            font-size: 13px;
+            font-weight: 500;
+            color: rgba(240,246,252,0.7);
+            white-space: nowrap;
+        }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        /* ── View Toggle (GitHub tab style) ── */
+        .view-toggle {
+            display: flex;
+            border: 1px solid var(--header-border);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .view-toggle button {
+            background: transparent;
+            border: none;
+            color: rgba(240,246,252,0.7);
+            font-size: 12px;
+            font-weight: 500;
+            padding: 3px 10px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            white-space: nowrap;
+            line-height: 20px;
+        }
+        .view-toggle button + button {
+            border-left: 1px solid var(--header-border);
+        }
+        .view-toggle button.active {
+            background: rgba(240,246,252,0.1);
+            color: var(--header-fg);
+        }
+        .view-toggle button:hover:not(.active) {
+            background: rgba(240,246,252,0.05);
+            color: rgba(240,246,252,0.85);
+        }
+
+        /* ── Theme Toggle ── */
+        .theme-toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            border-radius: 12px;
+            background: var(--knob-bg);
+            cursor: pointer;
+            border: 1px solid var(--header-border);
+            padding: 0;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+        .theme-toggle .knob {
+            position: absolute;
+            left: 2px; top: 2px;
+            width: 18px; height: 18px;
+            border-radius: 50%;
+            background: var(--knob-fg);
+            box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+            transition: transform 0.2s cubic-bezier(0.4,0,0.2,1);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .theme-toggle .knob svg {
+            width: 12px; height: 12px;
+            fill: var(--header-bg);
+        }
+        [data-theme="dark"] .theme-toggle .knob {
+            transform: translateX(20px);
+        }
+
+        /* ══════════════════════════════════════════════════════════
+           Stats Bar
+           ══════════════════════════════════════════════════════════ */
+        .stats-bar {
+            background: var(--bg-canvas);
+            border-bottom: 1px solid var(--border-default);
+            padding: 8px 24px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            white-space: nowrap;
+        }
+        .stat-bar {
+            display: flex;
+            width: 40px; height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            background: var(--border-muted);
+        }
+        .stat-bar-add {
+            background: var(--fg-success);
+        }
+        .stat-bar-del {
+            background: var(--fg-danger);
+        }
+        .stat-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+        .stat-value.add { color: var(--fg-success); }
+        .stat-value.del { color: var(--fg-danger); }
+
+        /* ══════════════════════════════════════════════════════════
+           Diff Container — delegate dark mode to d2h-dark-color-scheme
+           ══════════════════════════════════════════════════════════ */
+        #diff-container {
+            padding: 16px;
+            max-width: 100%;
+            background: var(--bg-page);
+        }
+
+        /* Light mode: small visual refinements only */
+        [data-theme="light"] .d2h-file-wrapper {
+            border-color: var(--border-default) !important;
+            border-radius: var(--radius) !important;
+            margin-bottom: 16px !important;
+            box-shadow: var(--shadow-sm);
+        }
+        [data-theme="light"] .d2h-file-header {
+            padding: 8px 14px !important;
+        }
+        [data-theme="light"] .d2h-file-name {
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            color: var(--text-primary) !important;
+        }
+
+        /* Dark mode: d2h-dark-color-scheme handles everything GitHub-style */
+        [data-theme="dark"] #diff-container.d2h-dark-color-scheme .d2h-file-wrapper {
+            border-radius: var(--radius) !important;
+            margin-bottom: 16px !important;
+            box-shadow: var(--shadow-sm);
+        }
+        [data-theme="dark"] #diff-container.d2h-dark-color-scheme .d2h-file-header {
+            padding: 8px 14px !important;
+        }
+        [data-theme="dark"] #diff-container.d2h-dark-color-scheme .d2h-file-name {
+            font-weight: 600 !important;
+            font-size: 13px !important;
+        }
+
+        /* Common tweaks for both themes */
+        .d2h-wrapper {
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .d2h-diff-table {
+            font-family: "SF Mono", "Monaco", "Menlo", "Consolas", "Liberation Mono", monospace;
+            font-size: 12px;
+        }
+
+        /* ══════════════════════════════════════════════════════════
+           Responsive
+           ══════════════════════════════════════════════════════════ */
+        @media (max-width: 900px) {
+            .header { padding: 0 16px; }
+            .header-branch { display: none; }
+            .stats-bar { padding: 8px 16px; gap: 10px; font-size: 12px; }
+            #diff-container { padding: 8px; }
+        }
+        @media (max-width: 600px) {
+            .header-title { max-width: 140px; font-size: 13px; }
+            .view-toggle button { padding: 3px 6px; font-size: 11px; }
+            .theme-toggle { width: 38px; height: 22px; }
+            .theme-toggle .knob { width: 16px; height: 16px; }
+            [data-theme="dark"] .theme-toggle .knob { transform: translateX(16px); }
+            .stat-bar { width: 32px; }
+        }
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+        /* ── Selection ── */
+        ::selection { background: rgba(9,105,218,0.25); }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-left">
+            <div class="header-icon">
+                <svg viewBox="0 0 16 16"><path d="M1 2.5A2.5 2.5 0 0 1 3.5 0h5A2.5 2.5 0 0 1 11 2.5V4h2.5A2.5 2.5 0 0 1 16 6.5v7a2.5 2.5 0 0 1-2.5 2.5h-5A2.5 2.5 0 0 1 6 13.5V12H3.5A2.5 2.5 0 0 1 1 9.5ZM3.5 1A1.5 1.5 0 0 0 2 2.5v7A1.5 1.5 0 0 0 3.5 11H6V6.5A2.5 2.5 0 0 1 8.5 4H10V2.5A1.5 1.5 0 0 0 8.5 1ZM8.5 5A1.5 1.5 0 0 0 7 6.5v7A1.5 1.5 0 0 0 8.5 15h5a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 13.5 5Z"/></svg>
+            </div>
+            <span class="header-title">{{.Title}}</span>
+            <span class="header-sep">/</span>
+            <span class="header-branch" id="view-label">Side-by-side</span>
+        </div>
+        <div class="header-right">
+            <div class="view-toggle">
+                <button id="btn-side-by-side" class="active" onclick="switchView('side-by-side')">Split</button>
+                <button id="btn-line-by-line" onclick="switchView('line-by-line')">Unified</button>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
+                <span class="knob" id="theme-knob">
+                    <svg id="icon-sun" viewBox="0 0 16 16"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm0-8.5a.5.5 0 0 1-.5-.5V1.5a.5.5 0 0 1 1 0V2a.5.5 0 0 1-.5.5Zm0 12a.5.5 0 0 1-.5-.5v-.5a.5.5 0 0 1 1 0v.5a.5.5 0 0 1-.5.5ZM3.05 4.46a.5.5 0 0 1-.35-.15l-.35-.35a.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85Zm9.19 9.19a.5.5 0 0 1-.35-.15l-.35-.35a.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85ZM1.5 8.5H2a.5.5 0 0 0 0-1h-.5a.5.5 0 0 0 0 1Zm12 0h.5a.5.5 0 0 0 0-1h-.5a.5.5 0 0 0 0 1Zm-9.8 5.04a.5.5 0 0 1-.35-.15.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85Zm9.19-9.19a.5.5 0 0 1-.35-.15l-.35-.35a.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85Z"/></svg>
+                    <svg id="icon-moon" viewBox="0 0 16 16" style="display:none"><path d="M9.598 1.591a.75.75 0 0 1 .785-.175 7 7 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Zm1.614 1.79a7.02 7.02 0 0 1 .947 2.717 4.001 4.001 0 0 1-4.842 4.842 7.02 7.02 0 0 1-2.717-.947A5.5 5.5 0 0 0 11.212 3.38Z"/></svg>
+                </span>
+            </button>
+        </div>
+    </header>
+    <div class="stats-bar" id="stats-bar"></div>
+    <div id="diff-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html-ui.min.js"></script>
+    <script>
+        const diffString = {{.DiffJSON}};
+
+        let currentView = 'side-by-side';
+
+        /* ── Stats ── */
+        function parseStats(diff) {
+            let files = 0, added = 0, deleted = 0;
+            const fileBlocks = diff.split(/\ndiff --git /).slice(1);
+            files = fileBlocks.length;
+            const addMatch = diff.match(/^\+[^+]/gm);
+            const delMatch = diff.match(/^\-[^-]/gm);
+            added = addMatch ? addMatch.length : 0;
+            deleted = delMatch ? delMatch.length : 0;
+            return { files, added, deleted };
+        }
+
+        function renderStats(stats) {
+            const bar = document.getElementById('stats-bar');
+            const total = stats.added + stats.deleted || 1;
+            const addPct = Math.round(stats.added / total * 100);
+            const delPct = 100 - addPct;
+            bar.innerHTML =
+                '<span class="stat"><span class="stat-value add">+' + stats.added + '</span></span>' +
+                '<span class="stat"><span class="stat-value del">-' + stats.deleted + '</span></span>' +
+                '<span class="stat"><span class="stat-bar"><span class="stat-bar-add" style="width:' + addPct + '%"></span><span class="stat-bar-del" style="width:' + delPct + '%"></span></span></span>' +
+                '<span class="stat">' + stats.files + ' file' + (stats.files !== 1 ? 's' : '') + ' changed</span>';
+        }
+
+        /* ── Render ── */
+        function render(format) {
+            const target = document.getElementById('diff-container');
+            target.innerHTML = '';
+            // Apply d2h-dark-color-scheme in dark mode so diff2html uses GitHub dark palette
+            if (document.documentElement.getAttribute('data-theme') === 'dark') {
+                target.classList.add('d2h-dark-color-scheme');
+            } else {
+                target.classList.remove('d2h-dark-color-scheme');
+            }
+            const config = {
+                drawFileList: true,
+                matching: 'lines',
+                outputFormat: format,
+                highlight: true,
+                renderNothingWhenEmpty: false,
+            };
+            const ui = new Diff2HtmlUI(target, diffString, config);
+            ui.draw();
+            ui.highlightCode();
+        }
+
+        function switchView(format) {
+            currentView = format;
+            document.getElementById('btn-side-by-side').classList.toggle('active', format === 'side-by-side');
+            document.getElementById('btn-line-by-line').classList.toggle('active', format === 'line-by-line');
+            document.getElementById('view-label').textContent = format === 'side-by-side' ? 'Side-by-side' : 'Unified';
+            render(format);
+        }
+
+        /* ── Theme ── */
+        function getPreferredTheme() {
+            const stored = localStorage.getItem('diff-theme');
+            if (stored) return stored;
+            return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            const knob = document.getElementById('theme-knob');
+            document.getElementById('icon-sun').style.display = theme === 'dark' ? 'none' : 'block';
+            document.getElementById('icon-moon').style.display = theme === 'dark' ? 'block' : 'none';
+            localStorage.setItem('diff-theme', theme);
+            render(currentView);
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            applyTheme(current === 'dark' ? 'light' : 'dark');
+        }
+
+        /* ── Init ── */
+        applyTheme(getPreferredTheme());
+        renderStats(parseStats(diffString));
+        render(currentView);
+    </script>
+</body>
+</html>
