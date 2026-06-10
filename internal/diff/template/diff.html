@@ -84,10 +84,11 @@
             background: var(--header-bg);
             border-bottom: 1px solid var(--header-border);
             padding: 0 24px;
-            height: 48px;
+            min-height: 48px;
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 12px;
         }
         .header-left {
             display: flex;
@@ -135,7 +136,8 @@
             border-radius: 5px;
             overflow: hidden;
         }
-        .view-toggle button {
+        .view-toggle button,
+        .toolbar-toggle {
             background: transparent;
             border: none;
             color: rgba(240,246,252,0.7);
@@ -143,20 +145,27 @@
             font-weight: 500;
             padding: 3px 10px;
             cursor: pointer;
-            transition: background 0.15s, color 0.15s;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
             white-space: nowrap;
             line-height: 20px;
         }
         .view-toggle button + button {
             border-left: 1px solid var(--header-border);
         }
-        .view-toggle button.active {
+        .view-toggle button.active,
+        .toolbar-toggle.active {
             background: rgba(240,246,252,0.1);
             color: var(--header-fg);
         }
-        .view-toggle button:hover:not(.active) {
+        .view-toggle button:hover:not(.active),
+        .toolbar-toggle:hover:not(.active) {
             background: rgba(240,246,252,0.05);
             color: rgba(240,246,252,0.85);
+        }
+        .toolbar-toggle {
+            border: 1px solid var(--header-border);
+            border-radius: 5px;
+            flex-shrink: 0;
         }
 
         /* ── Theme Toggle ── */
@@ -273,6 +282,62 @@
         .d2h-diff-table {
             font-family: "SF Mono", "Monaco", "Menlo", "Consolas", "Liberation Mono", monospace;
             font-size: 12px;
+            min-width: 100%;
+        }
+        .d2h-file-diff,
+        .d2h-file-side-diff {
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-x: contain;
+        }
+        .d2h-code-line,
+        .d2h-code-side-line {
+            min-width: 100%;
+        }
+        .d2h-code-linenumber,
+        .d2h-code-side-linenumber,
+        .d2h-emptyplaceholder,
+        .d2h-code-side-emptyplaceholder {
+            position: -webkit-sticky !important;
+            position: sticky !important;
+            left: 0;
+            z-index: 4;
+            background-color: var(--bg-inset) !important;
+            background-clip: border-box !important;
+            border-left-color: var(--bg-inset) !important;
+            border-right-color: var(--border-default) !important;
+        }
+        .d2h-code-linenumber,
+        .d2h-code-side-linenumber {
+            box-shadow: -2px 0 0 0 var(--bg-inset), 1px 0 0 0 var(--border-default);
+        }
+
+        body.wrap-enabled .d2h-code-line,
+        body.wrap-enabled .d2h-code-side-line {
+            display: flex !important;
+            align-items: flex-start;
+            box-sizing: border-box;
+            width: 100% !important;
+            white-space: pre-wrap !important;
+            overflow-wrap: anywhere;
+            word-break: normal;
+        }
+        body.wrap-enabled .d2h-code-line-prefix {
+            display: inline-block;
+            flex: 0 0 1em;
+            width: 1em;
+            white-space: pre !important;
+        }
+        body.wrap-enabled .d2h-code-line-ctn,
+        body.wrap-enabled .d2h-code-side-line-ctn {
+            display: block;
+            flex: 1 1 auto;
+            min-width: 0;
+            width: auto !important;
+            white-space: pre-wrap !important;
+            overflow-wrap: anywhere;
+            word-break: normal;
         }
 
         /* ══════════════════════════════════════════════════════════
@@ -286,11 +351,22 @@
         }
         @media (max-width: 600px) {
             .header-title { max-width: 140px; font-size: 13px; }
-            .view-toggle button { padding: 3px 6px; font-size: 11px; }
+            .view-toggle button,
+            .toolbar-toggle { padding: 3px 6px; font-size: 11px; }
             .theme-toggle { width: 38px; height: 22px; }
             .theme-toggle .knob { width: 16px; height: 16px; }
             [data-theme="dark"] .theme-toggle .knob { transform: translateX(16px); }
             .stat-bar { width: 32px; }
+        }
+        @media (max-width: 480px) {
+            .header {
+                padding: 8px 12px;
+                flex-wrap: wrap;
+            }
+            .header-right {
+                width: 100%;
+                justify-content: flex-end;
+            }
         }
 
         /* ── Scrollbar ── */
@@ -311,13 +387,14 @@
             </div>
             <span class="header-title">{{.Title}}</span>
             <span class="header-sep">/</span>
-            <span class="header-branch" id="view-label">Side-by-side</span>
+            <span class="header-branch" id="view-label">Split</span>
         </div>
         <div class="header-right">
             <div class="view-toggle">
                 <button id="btn-side-by-side" class="active" onclick="switchView('side-by-side')">Split</button>
                 <button id="btn-line-by-line" onclick="switchView('line-by-line')">Unified</button>
             </div>
+            <button id="btn-wrap" class="toolbar-toggle" onclick="toggleWrap()" aria-pressed="false">Wrap</button>
             <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
                 <span class="knob" id="theme-knob">
                     <svg id="icon-sun" viewBox="0 0 16 16"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm0-8.5a.5.5 0 0 1-.5-.5V1.5a.5.5 0 0 1 1 0V2a.5.5 0 0 1-.5.5Zm0 12a.5.5 0 0 1-.5-.5v-.5a.5.5 0 0 1 1 0v.5a.5.5 0 0 1-.5.5ZM3.05 4.46a.5.5 0 0 1-.35-.15l-.35-.35a.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85Zm9.19 9.19a.5.5 0 0 1-.35-.15l-.35-.35a.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85ZM1.5 8.5H2a.5.5 0 0 0 0-1h-.5a.5.5 0 0 0 0 1Zm12 0h.5a.5.5 0 0 0 0-1h-.5a.5.5 0 0 0 0 1Zm-9.8 5.04a.5.5 0 0 1-.35-.15.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85Zm9.19-9.19a.5.5 0 0 1-.35-.15l-.35-.35a.5.5 0 1 1 .7-.7l.36.35a.5.5 0 0 1-.36.85Z"/></svg>
@@ -333,7 +410,8 @@
     <script>
         const diffString = {{.DiffJSON}};
 
-        let currentView = 'side-by-side';
+        let currentView = null;
+        let wrapEnabled = false;
 
         /* ── Stats ── */
         function parseStats(diff) {
@@ -363,7 +441,6 @@
         function render(format) {
             const target = document.getElementById('diff-container');
             target.innerHTML = '';
-            // Apply d2h-dark-color-scheme in dark mode so diff2html uses GitHub dark palette
             if (document.documentElement.getAttribute('data-theme') === 'dark') {
                 target.classList.add('d2h-dark-color-scheme');
             } else {
@@ -381,12 +458,57 @@
             ui.highlightCode();
         }
 
-        function switchView(format) {
-            currentView = format;
+        function updateViewControls(format) {
             document.getElementById('btn-side-by-side').classList.toggle('active', format === 'side-by-side');
             document.getElementById('btn-line-by-line').classList.toggle('active', format === 'line-by-line');
-            document.getElementById('view-label').textContent = format === 'side-by-side' ? 'Side-by-side' : 'Unified';
+            document.getElementById('view-label').textContent = format === 'side-by-side' ? 'Split' : 'Unified';
+        }
+
+        function setView(format) {
+            updateViewControls(format);
+            if (currentView === format) return;
+            currentView = format;
             render(format);
+        }
+
+        function switchView(format) {
+            setView(format);
+        }
+
+        function getResponsiveView() {
+            return window.innerWidth <= 768 ? 'line-by-line' : 'side-by-side';
+        }
+
+        function syncResponsiveView() {
+            setView(getResponsiveView());
+        }
+
+        function bindResponsiveView() {
+            let resizeTimer;
+            const handler = () => {
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(syncResponsiveView, 100);
+            };
+            window.addEventListener('resize', handler, { passive: true });
+            window.matchMedia('(max-width: 768px)').addEventListener('change', handler);
+        }
+
+        /* ── Wrap ── */
+        function getPreferredWrap() {
+            return localStorage.getItem('diff-wrap-enabled') === 'true';
+        }
+
+        function applyWrap(enabled) {
+            wrapEnabled = enabled;
+            document.body.classList.toggle('wrap-enabled', enabled);
+            const button = document.getElementById('btn-wrap');
+            button.classList.toggle('active', enabled);
+            button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+            localStorage.setItem('diff-wrap-enabled', String(enabled));
+        }
+
+        function toggleWrap() {
+            applyWrap(!wrapEnabled);
         }
 
         /* ── Theme ── */
@@ -396,13 +518,15 @@
             return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
         }
 
-        function applyTheme(theme) {
+        function applyTheme(theme, options = {}) {
+            const { rerender = true } = options;
             document.documentElement.setAttribute('data-theme', theme);
-            const knob = document.getElementById('theme-knob');
             document.getElementById('icon-sun').style.display = theme === 'dark' ? 'none' : 'block';
             document.getElementById('icon-moon').style.display = theme === 'dark' ? 'block' : 'none';
             localStorage.setItem('diff-theme', theme);
-            render(currentView);
+            if (rerender && currentView) {
+                render(currentView);
+            }
         }
 
         function toggleTheme() {
@@ -411,9 +535,11 @@
         }
 
         /* ── Init ── */
-        applyTheme(getPreferredTheme());
+        applyTheme(getPreferredTheme(), { rerender: false });
+        applyWrap(getPreferredWrap());
         renderStats(parseStats(diffString));
-        render(currentView);
+        syncResponsiveView();
+        bindResponsiveView();
     </script>
 </body>
 </html>
