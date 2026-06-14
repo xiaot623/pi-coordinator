@@ -288,7 +288,7 @@ func ResolvePaths() (Paths, error) {
 	if err != nil {
 		return Paths{}, err
 	}
-	dir := filepath.Join(home, ".pi", "pico")
+	dir := filepath.Join(home, ".mypi", "pico")
 	return Paths{DataDir: dir, DBPath: filepath.Join(dir, "pico.db"), ConfigPath: filepath.Join(dir, "config.yaml")}, nil
 }
 

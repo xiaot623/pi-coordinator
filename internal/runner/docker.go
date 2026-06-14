@@ -261,8 +261,8 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 	}
 	args = append(args,
 		"-v", d.opts.HostAgentDir+":"+filepath.Join(d.opts.ContainerHome, ".pi", "agent")+":"+d.opts.AgentMountMode,
-		"-v", d.opts.HostPluginDir+":"+filepath.Join(d.opts.ContainerHome, ".pi", "pico", "agent")+":ro",
-		"-v", d.opts.HostSessionDir+":"+filepath.Join(d.opts.ContainerHome, ".pi", "pico", "sessions", "docker")+":rw",
+		"-v", d.opts.HostPluginDir+":"+filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "agent")+":ro",
+		"-v", d.opts.HostSessionDir+":"+filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "sessions", "docker")+":rw",
 	)
 	if d.opts.HostSkillsDir != "" {
 		args = append(args, "-v", d.opts.HostSkillsDir+":"+filepath.Join(d.opts.ContainerHome, ".agents", "skills")+":ro")
@@ -325,7 +325,7 @@ func (d *Docker) queryAvailableModels(ctx context.Context) ([]ModelInfo, error) 
 }
 
 func (d *Docker) piArgs(ctx context.Context, req StartRequest, convertPlugins bool) ([]string, error) {
-	sessionDir := filepath.Join(d.opts.ContainerHome, ".pi", "pico", "sessions", "docker")
+	sessionDir := filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "sessions", "docker")
 	args := []string{d.opts.Binary}
 	pluginArgs, err := d.pluginArgs(ctx, convertPlugins)
 	if err != nil {
@@ -367,7 +367,7 @@ func (d *Docker) pluginArgs(ctx context.Context, convert bool) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
-	containerRoot := filepath.Join(d.opts.ContainerHome, ".pi", "pico", "agent")
+	containerRoot := filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "agent")
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] != "--extension" {
 			continue

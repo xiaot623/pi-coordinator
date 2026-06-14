@@ -100,7 +100,7 @@ npm run dev
 # → creates dev_assets/pico.config.yaml
 ```
 
-Edit `dev_assets/pico.config.yaml` (or `~/.pi/pico/config.yaml` for production):
+Edit `dev_assets/pico.config.yaml` (or `~/.mypi/pico/config.yaml` for production):
 
 ```yaml
 telegram:

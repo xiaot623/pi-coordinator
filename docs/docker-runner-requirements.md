@@ -111,8 +111,8 @@ runner:
 | 模式 | 宿主机 session 目录 | 容器内 session 目录 |
 |---|---|---|
 | `local` | 现有 `runner.session_dir` | 不适用 |
-| `worktree` | `~/.pi/pico/sessions/worktree/` | 不适用 |
-| `docker` | `~/.pi/pico/sessions/docker/` | `<container_home>/.pi/pico/sessions/docker/` |
+| `worktree` | `~/.mypi/pico/sessions/worktree/` | 不适用 |
+| `docker` | `~/.mypi/pico/sessions/docker/` | `<container_home>/.mypi/pico/sessions/docker/` |
 
 Session scanner 需要扫描以上所有目录下的 `*.jsonl`。
 
@@ -141,7 +141,7 @@ git -C <workspace> rev-parse --verify HEAD
 base_commit=$(git -C <workspace> rev-parse HEAD)
 suffix="<10-char-random-alnum>"
 branch="$suffix"
-worktree_path="$HOME/.pi/pico/worktrees/<original-dir-name>_$suffix"
+worktree_path="$HOME/.mypi/pico/worktrees/<original-dir-name>_$suffix"
 
 git -C <workspace> worktree add -b "$branch" "$worktree_path" "$base_commit"
 ```
@@ -193,11 +193,11 @@ git -C <original_workspace> branch -D <worktree_branch>
 系统需要提供 worktree 的明确入口：
 
 - Topic 中展示 worktree 路径：
-  - `Worktree: ~/.pi/pico/worktrees/<original-dir-name>_<10-char-random-alnum>`
+  - `Worktree: ~/.mypi/pico/worktrees/<original-dir-name>_<10-char-random-alnum>`
 - diff、提交、合并等操作交给用户在 worktree 中使用常规 Git 工具处理。
 
 ```bash
-cd ~/.pi/pico/worktrees/<original-dir-name>_<10-char-random-alnum>
+cd ~/.mypi/pico/worktrees/<original-dir-name>_<10-char-random-alnum>
 git status
 git diff
 git commit
@@ -222,7 +222,7 @@ Worktree 模式复用 Local runner 的进程管理能力，但 `cwd` 和 session
 
 ```bash
 cd <worktree_path>
-pi --mode rpc --session-dir ~/.pi/pico/sessions/worktree --session-id <id> --name <title> [--model <model>] [--extension ...]
+pi --mode rpc --session-dir ~/.mypi/pico/sessions/worktree --session-id <id> --name <title> [--model <model>] [--extension ...]
 ```
 
 要求：
@@ -262,13 +262,13 @@ docker run --rm \
   -v <git_dir>:<git_dir>:rw \
   -v <common_git_dir>:<common_git_dir>:rw \
   -v <host_agent_dir>:<container_home>/.pi/agent:rw \
-  -v <host_plugin_dir>:<container_home>/.pi/pico/agent:ro \
+  -v <host_plugin_dir>:<container_home>/.mypi/pico/agent:ro \
   -v <host_skills_dir>:<container_home>/.agents/skills:ro \
-  -v <host_docker_session_dir>:<container_home>/.pi/pico/sessions/docker:rw \
+  -v <host_docker_session_dir>:<container_home>/.mypi/pico/sessions/docker:rw \
   -w <worktree_path> \
   -i \
   <image> \
-  pi --mode rpc --session-dir <container_home>/.pi/pico/sessions/docker --session-id <id> --name <title> [--model <model>] [--extension ...]
+  pi --mode rpc --session-dir <container_home>/.mypi/pico/sessions/docker --session-id <id> --name <title> [--model <model>] [--extension ...]
 ```
 
 说明：
@@ -278,9 +278,9 @@ docker run --rm \
 - `<container_home>` 建议使用镜像内固定路径，例如 `/home/pi`。
 - `<host_agent_dir>` 对应宿主机 `~/.pi/agent/`，挂载到 pi 默认鉴权配置目录。
 - `<host_agent_dir>` 默认以 `rw` 挂载；pi 启动时会写 lock/cache/package metadata。
-- `<host_plugin_dir>` 对应宿主机 `~/.pi/pico/agent/`，只读挂载到 pico 插件目录。
+- `<host_plugin_dir>` 对应宿主机 `~/.mypi/pico/agent/`，只读挂载到 pico 插件目录。
 - `<host_skills_dir>` 对应宿主机 `~/.agents/skills/`，只读挂载到容器用户 skills 目录。
-- `<host_docker_session_dir>` 对应宿主机 `~/.pi/pico/sessions/docker/`。
+- `<host_docker_session_dir>` 对应宿主机 `~/.mypi/pico/sessions/docker/`。
 - Session 目录需要 `rw`，用于 jsonl 持久化。
 - 鉴权、插件、session 三类目录不要使用嵌套挂载，避免只读父目录下再挂可写子目录导致跨平台行为不一致。
 - 如果 `git_dir` 已经位于 `common_git_dir` 内，挂载 `common_git_dir` 即可，实际实现需去重。
@@ -290,18 +290,18 @@ docker run --rm \
 Local / Worktree runner 传宿主机插件路径，例如：
 
 ```bash
---extension /home/user/.pi/pico/agent/npm/node_modules/xxx/index.js
+--extension /home/user/.mypi/pico/agent/npm/node_modules/xxx/index.js
 ```
 
 Docker runner 需要转换为容器内路径：
 
-- 宿主机 `~/.pi/pico/agent/`
-- 容器内 `<container_home>/.pi/pico/agent/`
+- 宿主机 `~/.mypi/pico/agent/`
+- 容器内 `<container_home>/.mypi/pico/agent/`
 
 即做前缀替换：
 
 ```text
-~/.pi/pico/agent/... → <container_home>/.pi/pico/agent/...
+~/.mypi/pico/agent/... → <container_home>/.mypi/pico/agent/...
 ```
 
 Docker runner 启动前需要校验转换后的插件入口存在：
@@ -321,13 +321,13 @@ Docker runner 需要满足以下验收条件：
    - 挂载模式固定为 `rw`，用于 pi 写 lock/cache/package metadata。
    - 容器内 `pi` 使用默认 HOME 时可以读取该目录下的 API key、模型配置等文件。
 2. 插件可传入
-   - 宿主机 pico 维护的插件目录 `~/.pi/pico/agent/` 挂载到 `<container_home>/.pi/pico/agent`。
+   - 宿主机 pico 维护的插件目录 `~/.mypi/pico/agent/` 挂载到 `<container_home>/.mypi/pico/agent`。
    - Docker runner 对每个 `--extension` 做前缀转换。
    - 转换后传给容器内 pi 的 `--extension` 必须指向容器内真实存在的文件。
 3. Session 可持久化
-   - 宿主机 `~/.pi/pico/sessions/docker/` 挂载到 `<container_home>/.pi/pico/sessions/docker`。
-   - `pi --session-dir` 必须使用 `<container_home>/.pi/pico/sessions/docker`。
-   - 容器退出后，宿主机 `~/.pi/pico/sessions/docker/<session-id>.jsonl` 仍然存在并可被 scanner 扫描。
+   - 宿主机 `~/.mypi/pico/sessions/docker/` 挂载到 `<container_home>/.mypi/pico/sessions/docker`。
+   - `pi --session-dir` 必须使用 `<container_home>/.mypi/pico/sessions/docker`。
+   - 容器退出后，宿主机 `~/.mypi/pico/sessions/docker/<session-id>.jsonl` 仍然存在并可被 scanner 扫描。
 4. 用户 skills 可读
    - 宿主机 `~/.agents/skills/` 挂载到 `<container_home>/.agents/skills`。
    - 挂载模式为 `ro`。

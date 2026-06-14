@@ -503,7 +503,7 @@ PICO_ENV=dev go run ./cmd/pico
 | 环境 | 数据库 | 配置文件 |
 |------|--------|----------|
 | `PICO_ENV=dev` | `./dev_assets/pico.db` | `./dev_assets/pico.config.yaml` |
-| 生产（默认） | `~/.pi/pico/pico.db` | `~/.pi/pico/config.yaml` |
+| 生产（默认） | `~/.mypi/pico/pico.db` | `~/.mypi/pico/config.yaml` |
 
 ---
 

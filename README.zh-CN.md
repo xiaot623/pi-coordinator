@@ -99,7 +99,7 @@ npm run dev
 # → 创建 dev_assets/pico.config.yaml
 ```
 
-编辑 `dev_assets/pico.config.yaml`（生产环境使用 `~/.pi/pico/config.yaml`）：
+编辑 `dev_assets/pico.config.yaml`（生产环境使用 `~/.mypi/pico/config.yaml`）：
 
 ```yaml
 telegram:
