@@ -34,11 +34,15 @@ type DockerOptions struct {
 	Logger               *slog.Logger
 }
 
-// DockerMount binds a host directory into the container at the same absolute
-// path.
+// DockerMount binds a host directory into the container.
+// If HomeMapped is true, the container target is resolved under ContainerHome;
+// otherwise the mount keeps the same absolute path.
 type DockerMount struct {
-	HostPath string
-	Mode     string
+	HostPath      string
+	ContainerPath string
+	HomeSubpath   string
+	HomeMapped    bool
+	Mode          string
 }
 
 type Docker struct {
@@ -257,7 +261,11 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 		args = append(args, "-v", mount+":"+mount+":rw")
 	}
 	for _, mount := range extraMounts {
-		args = append(args, "-v", mount.HostPath+":"+mount.HostPath+":"+mount.Mode)
+		containerPath := mount.ContainerPath
+		if containerPath == "" {
+			containerPath = mount.HostPath
+		}
+		args = append(args, "-v", mount.HostPath+":"+containerPath+":"+mount.Mode)
 	}
 	args = append(args,
 		"-v", d.opts.HostAgentDir+":"+filepath.Join(d.opts.ContainerHome, ".pi", "agent")+":"+d.opts.AgentMountMode,
@@ -430,7 +438,7 @@ func (d *Docker) extraMounts(workspace string, gitMounts []string) ([]DockerMoun
 	if len(d.opts.ExtraMounts) == 0 {
 		return nil, nil
 	}
-	reserved, err := absolutePaths(workspace, d.opts.HostAgentDir, d.opts.HostPluginDir, d.opts.HostSkillsDir, d.opts.HostSessionDir)
+	reservedHostPaths, err := absolutePaths(workspace, d.opts.HostAgentDir, d.opts.HostPluginDir, d.opts.HostSkillsDir, d.opts.HostSessionDir)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +446,21 @@ func (d *Docker) extraMounts(workspace string, gitMounts []string) ([]DockerMoun
 	if err != nil {
 		return nil, err
 	}
-	reserved = append(reserved, gitMounts...)
+	reservedHostPaths = append(reservedHostPaths, gitMounts...)
+	reservedContainerPaths := append([]string{}, gitMounts...)
+	if workspace != "" {
+		workspace, err = filepath.Abs(strings.TrimSpace(workspace))
+		if err != nil {
+			return nil, err
+		}
+		reservedContainerPaths = append(reservedContainerPaths, filepath.Clean(workspace))
+	}
+	reservedContainerPaths = append(reservedContainerPaths,
+		filepath.Join(d.opts.ContainerHome, ".pi", "agent"),
+		filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "agent"),
+		filepath.Join(d.opts.ContainerHome, ".agents", "skills"),
+		filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "sessions", "docker"),
+	)
 	mounts := make([]DockerMount, 0, len(d.opts.ExtraMounts))
 	for _, mount := range d.opts.ExtraMounts {
 		hostPath, err := filepath.Abs(strings.TrimSpace(mount.HostPath))
@@ -448,6 +470,10 @@ func (d *Docker) extraMounts(workspace string, gitMounts []string) ([]DockerMoun
 		if err := requireDir(hostPath); err != nil {
 			return nil, fmt.Errorf("docker extra mount %q: %w", hostPath, err)
 		}
+		containerPath := hostPath
+		if mount.HomeMapped {
+			containerPath = filepath.Clean(filepath.Join(d.opts.ContainerHome, mount.HomeSubpath))
+		}
 		mode := strings.TrimSpace(mount.Mode)
 		if mode == "" {
 			mode = "ro"
@@ -455,17 +481,25 @@ func (d *Docker) extraMounts(workspace string, gitMounts []string) ([]DockerMoun
 		if mode != "ro" && mode != "rw" {
 			return nil, fmt.Errorf("docker extra mount %q has invalid mode %q", hostPath, mode)
 		}
-		for _, path := range reserved {
+		for _, path := range reservedHostPaths {
 			if pathsOverlap(hostPath, path) {
-				return nil, fmt.Errorf("docker extra mount %q overlaps reserved mount %q", hostPath, path)
+				return nil, fmt.Errorf("docker extra mount %q overlaps reserved host mount %q", hostPath, path)
+			}
+		}
+		for _, path := range reservedContainerPaths {
+			if pathsOverlap(containerPath, path) {
+				return nil, fmt.Errorf("docker extra mount %q -> %q overlaps reserved container mount %q", hostPath, containerPath, path)
 			}
 		}
 		for _, existing := range mounts {
 			if pathsOverlap(hostPath, existing.HostPath) {
-				return nil, fmt.Errorf("docker extra mount %q overlaps %q", hostPath, existing.HostPath)
+				return nil, fmt.Errorf("docker extra mount %q overlaps host mount %q", hostPath, existing.HostPath)
+			}
+			if pathsOverlap(containerPath, existing.ContainerPath) {
+				return nil, fmt.Errorf("docker extra mount %q -> %q overlaps container mount %q", hostPath, containerPath, existing.ContainerPath)
 			}
 		}
-		mounts = append(mounts, DockerMount{HostPath: hostPath, Mode: mode})
+		mounts = append(mounts, DockerMount{HostPath: hostPath, ContainerPath: containerPath, HomeSubpath: mount.HomeSubpath, HomeMapped: mount.HomeMapped, Mode: mode})
 	}
 	return mounts, nil
 }

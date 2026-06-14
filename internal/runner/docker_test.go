@@ -53,7 +53,8 @@ func TestDockerContainerArgsIncludeExtraMounts(t *testing.T) {
 	sessionDir := filepath.Join(tmp, "sessions")
 	roDir := filepath.Join(tmp, "shared")
 	rwDir := filepath.Join(tmp, "scratch")
-	for _, dir := range []string{agentDir, pluginDir, sessionDir, roDir, rwDir} {
+	homeDir := filepath.Join(tmp, "home-source")
+	for _, dir := range []string{agentDir, pluginDir, sessionDir, roDir, rwDir, homeDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("prepare dir %s: %v", dir, err)
 		}
@@ -68,6 +69,7 @@ func TestDockerContainerArgsIncludeExtraMounts(t *testing.T) {
 		ExtraMounts: []DockerMount{
 			{HostPath: roDir},
 			{HostPath: rwDir, Mode: "rw"},
+			{HostPath: homeDir, HomeMapped: true, HomeSubpath: ".feishu-cli"},
 		},
 	})
 
@@ -82,6 +84,9 @@ func TestDockerContainerArgsIncludeExtraMounts(t *testing.T) {
 	}
 	if !strings.Contains(joined, rwDir+":"+rwDir+":rw") {
 		t.Fatalf("expected read-write extra mount in args: %q", joined)
+	}
+	if !strings.Contains(joined, homeDir+":/home/pi/.feishu-cli:ro") {
+		t.Fatalf("expected home-mapped extra mount in args: %q", joined)
 	}
 }
 
@@ -106,7 +111,7 @@ func TestDockerContainerArgsRejectOverlappingExtraMounts(t *testing.T) {
 	})
 
 	_, err := d.containerArgs(context.Background(), StartRequest{SessionID: "sess-1"})
-	if err == nil || !strings.Contains(err.Error(), "overlaps reserved mount") {
+	if err == nil || !strings.Contains(err.Error(), "overlaps reserved") {
 		t.Fatalf("expected overlap error, got %v", err)
 	}
 }

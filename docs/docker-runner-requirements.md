@@ -241,6 +241,10 @@ Docker 模式挂载 worktree，而不挂载真实 workspace。
 
 所有 Docker bind mount 的宿主机路径必须在启动前展开为绝对路径，并由 pico 预先创建或校验存在。不要把 `~` 直接传给 Docker，也不要依赖 Docker 自动创建宿主机目录。
 
+`runner.docker.extra_mounts` 额外规则：
+- 如果配置值以 `~` / `~/...` 开头，表示“宿主机 HOME 对应映射到容器 HOME”。例如 `~/.feishu-cli` 会展开成 `-v <host_home>/.feishu-cli:<container_home>/.feishu-cli`。
+- 如果不是 `~` 路径，则保持“同绝对路径挂载”。例如 `/opt/data` 会挂载为 `-v /opt/data:/opt/data`。
+
 注意：Git worktree 的 `.git` 通常是一个文件，内容指向原仓库 `.git/worktrees/...`。因此容器内如果要运行 Git 命令，仅挂载 worktree 目录不够，还必须让 worktree 指向的 git metadata 路径在容器内可见。
 
 Docker runner 启动前需要解析：

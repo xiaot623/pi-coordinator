@@ -65,10 +65,10 @@ runner:
 	if len(mounts) != 2 {
 		t.Fatalf("expected 2 mounts, got %d", len(mounts))
 	}
-	if mounts[0].Host != filepath.Join(home, "data") || mounts[0].Mode != "ro" {
+	if mounts[0].Host != filepath.Join(home, "data") || mounts[0].Mode != "ro" || !mounts[0].HomeMapped || mounts[0].HomeSubpath != "data" {
 		t.Fatalf("unexpected first mount: %#v", mounts[0])
 	}
-	if mounts[1].Host != "/tmp/cache" || mounts[1].Mode != "rw" {
+	if mounts[1].Host != "/tmp/cache" || mounts[1].Mode != "rw" || mounts[1].HomeMapped || mounts[1].HomeSubpath != "" {
 		t.Fatalf("unexpected second mount: %#v", mounts[1])
 	}
 }

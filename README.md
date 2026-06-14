@@ -155,9 +155,10 @@ runner:
     skills_dir: "~/.agents/skills"
     agent_mount_mode: "rw"
     extra_mounts:
-      - "~/.config"            # same-path read-only mount
+      - "~/.config"            # host ~/.config -> container ~/.config (ro)
       - host: "~/scratch"
-        mode: "rw"             # optional: ro | rw
+        mode: "rw"             # host ~/scratch -> container ~/scratch
+                                  # non-~/ paths keep same-path mounts
 
 open_tool: "iterm2"            # macOS: iterm2 / terminal; Linux: xdg-open
 global_model: ""               # Global default model (empty = pi default)

@@ -51,11 +51,14 @@ type DockerConfig struct {
 	ExtraMounts    DockerMounts `yaml:"extra_mounts"`
 }
 
-// DockerMount describes one host directory bind-mounted into the container at
-// the same absolute path.
+// DockerMount describes one host directory bind-mounted into the container.
+// If the configured host path used ~ or ~/..., it maps relative to the
+// container HOME; otherwise it keeps the same absolute path.
 type DockerMount struct {
-	Host string `yaml:"host"`
-	Mode string `yaml:"mode"`
+	Host        string `yaml:"host"`
+	Mode        string `yaml:"mode"`
+	HomeSubpath string `yaml:"-"`
+	HomeMapped  bool   `yaml:"-"`
 }
 
 type DockerMounts []DockerMount
@@ -304,6 +307,17 @@ func ExpandPath(path string) string {
 	return path
 }
 
+func homeSubpath(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "~" {
+		return "", true
+	}
+	if strings.HasPrefix(path, "~/") {
+		return path[2:], true
+	}
+	return "", false
+}
+
 func expandPaths(paths []string) []string {
 	if len(paths) == 0 {
 		return nil
@@ -329,9 +343,12 @@ func expandDockerMounts(mounts DockerMounts) DockerMounts {
 		if host == "" {
 			continue
 		}
+		homeSubpath, homeMapped := homeSubpath(host)
 		expanded = append(expanded, DockerMount{
-			Host: ExpandPath(host),
-			Mode: strings.TrimSpace(mount.Mode),
+			Host:        ExpandPath(host),
+			Mode:        strings.TrimSpace(mount.Mode),
+			HomeSubpath: homeSubpath,
+			HomeMapped:  homeMapped,
 		})
 	}
 	return expanded

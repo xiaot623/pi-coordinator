@@ -24,8 +24,8 @@ runner:
     skills_dir: "~/.agents/skills"
     agent_mount_mode: "rw"
     extra_mounts:
-      - "~/.config"           # same-path read-only mount
-      # - host: "~/scratch"   # same-path read-write mount
+      - "~/.config"           # maps host ~/.config -> container ~/.config (ro)
+      # - host: "~/scratch"   # maps host ~/scratch -> container ~/scratch
       #   mode: "rw"
 
 open_tool: "iterm2"

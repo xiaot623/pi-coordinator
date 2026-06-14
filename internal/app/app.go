@@ -108,7 +108,7 @@ func dockerMounts(mounts config.DockerMounts) []runner.DockerMount {
 	}
 	out := make([]runner.DockerMount, 0, len(mounts))
 	for _, mount := range mounts {
-		out = append(out, runner.DockerMount{HostPath: mount.Host, Mode: mount.Mode})
+		out = append(out, runner.DockerMount{HostPath: mount.Host, Mode: mount.Mode, HomeSubpath: mount.HomeSubpath, HomeMapped: mount.HomeMapped})
 	}
 	return out
 }

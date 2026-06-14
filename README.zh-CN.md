@@ -154,9 +154,10 @@ runner:
     skills_dir: "~/.agents/skills"
     agent_mount_mode: "rw"     # agent 挂载模式
     extra_mounts:
-      - "~/.config"            # 同路径只读挂载
+      - "~/.config"            # 宿主机 ~/.config -> 容器 ~/.config（ro）
       - host: "~/scratch"
-        mode: "rw"             # 可选：ro | rw
+        mode: "rw"             # 宿主机 ~/scratch -> 容器 ~/scratch
+                                  # 非 ~/ 路径仍然保持同路径挂载
 
 open_tool: "iterm2"            # macOS: iterm2 / terminal; Linux: xdg-open
 global_model: ""               # 全局默认模型（为空则使用 pi 默认值）
