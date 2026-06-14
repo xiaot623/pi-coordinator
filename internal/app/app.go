@@ -47,13 +47,21 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		return nil, err
 	}
 	pluginDir := filepath.Join(paths.DataDir, "agent")
+	dockerPluginDir := pluginDir
 	workSessionDir := cfg.Runner.Worktree.SessionDir
 	if workSessionDir == "" {
 		workSessionDir = filepath.Join(paths.DataDir, "sessions", "worktree")
 	}
-	dockerSessionDir := cfg.Runner.Docker.SessionDir
-	if dockerSessionDir == "" {
-		dockerSessionDir = filepath.Join(paths.DataDir, "sessions", "docker")
+	dockerSessionDir := filepath.Join(paths.DataDir, "sessions", "docker")
+	dockerAgentDir := cfg.Runner.Docker.AgentDir
+	if dockerAgentDir == "" {
+		home, _ := os.UserHomeDir()
+		dockerAgentDir = filepath.Join(home, ".pi", "agent")
+	}
+	dockerSkillsDir := cfg.Runner.Docker.SkillsDir
+	if dockerSkillsDir == "" {
+		home, _ := os.UserHomeDir()
+		dockerSkillsDir = filepath.Join(home, ".agents", "skills")
 	}
 	localOpts := runner.LocalOptions{
 		Binary:               "pi",
@@ -66,15 +74,15 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 	}
 	rm := runner.NewLocal(localOpts)
 	work := runner.NewWorktreeRunner(runner.WorktreeOptions{LocalOptions: localOpts, SessionDir: workSessionDir, Logger: logger})
-	home, _ := os.UserHomeDir()
 	docker := runner.NewDocker(runner.DockerOptions{
 		Binary:               "pi",
 		Image:                cfg.Runner.Docker.Image,
 		Network:              cfg.Runner.Docker.Network,
 		AgentMountMode:       cfg.Runner.Docker.AgentMountMode,
-		HostAgentDir:         filepath.Join(home, ".pi", "agent"),
-		HostPluginDir:        pluginDir,
-		HostSkillsDir:        filepath.Join(home, ".agents", "skills"),
+		ExtraMounts:          dockerMounts(cfg.Runner.Docker.ExtraMounts),
+		HostAgentDir:         dockerAgentDir,
+		HostPluginDir:        dockerPluginDir,
+		HostSkillsDir:        dockerSkillsDir,
 		HostSessionDir:       dockerSessionDir,
 		IdleTimeout:          cfg.Runner.Docker.IdleTimeout.Duration,
 		Plugins:              cfg.Plugins,
@@ -92,6 +100,17 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		docker: docker,
 		wt:     runner.NewWorktreeManager(filepath.Join(paths.DataDir, "worktrees")),
 	}, nil
+}
+
+func dockerMounts(mounts config.DockerMounts) []runner.DockerMount {
+	if len(mounts) == 0 {
+		return nil
+	}
+	out := make([]runner.DockerMount, 0, len(mounts))
+	for _, mount := range mounts {
+		out = append(out, runner.DockerMount{HostPath: mount.Host, Mode: mount.Mode})
+	}
+	return out
 }
 
 // Close cleans up resources.
@@ -142,10 +161,7 @@ func (a *App) SessionDirs() []string {
 	if workDir == "" {
 		workDir = filepath.Join(a.paths.DataDir, "sessions", "worktree")
 	}
-	dockerDir := a.cfg.Runner.Docker.SessionDir
-	if dockerDir == "" {
-		dockerDir = filepath.Join(a.paths.DataDir, "sessions", "docker")
-	}
+	dockerDir := filepath.Join(a.paths.DataDir, "sessions", "docker")
 	return []string{
 		a.cfg.Runner.Local.SessionDir,
 		workDir,

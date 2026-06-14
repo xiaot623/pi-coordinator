@@ -23,6 +23,7 @@ type DockerOptions struct {
 	Network              string
 	ContainerHome        string
 	AgentMountMode       string
+	ExtraMounts          []DockerMount
 	HostAgentDir         string
 	HostPluginDir        string
 	HostSkillsDir        string
@@ -31,6 +32,13 @@ type DockerOptions struct {
 	Plugins              []string
 	PluginUpdateInterval time.Duration
 	Logger               *slog.Logger
+}
+
+// DockerMount binds a host directory into the container at the same absolute
+// path.
+type DockerMount struct {
+	HostPath string
+	Mode     string
 }
 
 type Docker struct {
@@ -219,6 +227,10 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 			return nil, err
 		}
 	}
+	extraMounts, err := d.extraMounts(req.Workspace, gitMounts)
+	if err != nil {
+		return nil, err
+	}
 	piArgs, err := d.piArgs(ctx, req, true)
 	if err != nil {
 		return nil, err
@@ -243,6 +255,9 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 	}
 	for _, mount := range gitMounts {
 		args = append(args, "-v", mount+":"+mount+":rw")
+	}
+	for _, mount := range extraMounts {
+		args = append(args, "-v", mount.HostPath+":"+mount.HostPath+":"+mount.Mode)
 	}
 	args = append(args,
 		"-v", d.opts.HostAgentDir+":"+filepath.Join(d.opts.ContainerHome, ".pi", "agent")+":"+d.opts.AgentMountMode,
@@ -409,6 +424,75 @@ func compactMounts(paths ...string) []string {
 		}
 	}
 	return cleaned
+}
+
+func (d *Docker) extraMounts(workspace string, gitMounts []string) ([]DockerMount, error) {
+	if len(d.opts.ExtraMounts) == 0 {
+		return nil, nil
+	}
+	reserved, err := absolutePaths(workspace, d.opts.HostAgentDir, d.opts.HostPluginDir, d.opts.HostSkillsDir, d.opts.HostSessionDir)
+	if err != nil {
+		return nil, err
+	}
+	gitMounts, err = absolutePaths(gitMounts...)
+	if err != nil {
+		return nil, err
+	}
+	reserved = append(reserved, gitMounts...)
+	mounts := make([]DockerMount, 0, len(d.opts.ExtraMounts))
+	for _, mount := range d.opts.ExtraMounts {
+		hostPath, err := filepath.Abs(strings.TrimSpace(mount.HostPath))
+		if err != nil {
+			return nil, err
+		}
+		if err := requireDir(hostPath); err != nil {
+			return nil, fmt.Errorf("docker extra mount %q: %w", hostPath, err)
+		}
+		mode := strings.TrimSpace(mount.Mode)
+		if mode == "" {
+			mode = "ro"
+		}
+		if mode != "ro" && mode != "rw" {
+			return nil, fmt.Errorf("docker extra mount %q has invalid mode %q", hostPath, mode)
+		}
+		for _, path := range reserved {
+			if pathsOverlap(hostPath, path) {
+				return nil, fmt.Errorf("docker extra mount %q overlaps reserved mount %q", hostPath, path)
+			}
+		}
+		for _, existing := range mounts {
+			if pathsOverlap(hostPath, existing.HostPath) {
+				return nil, fmt.Errorf("docker extra mount %q overlaps %q", hostPath, existing.HostPath)
+			}
+		}
+		mounts = append(mounts, DockerMount{HostPath: hostPath, Mode: mode})
+	}
+	return mounts, nil
+}
+
+func absolutePaths(paths ...string) ([]string, error) {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filepath.Clean(abs))
+	}
+	return out, nil
+}
+
+func pathsOverlap(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if a == b {
+		return true
+	}
+	return strings.HasPrefix(a, b+string(filepath.Separator)) || strings.HasPrefix(b, a+string(filepath.Separator))
 }
 
 func requireDir(path string) error {

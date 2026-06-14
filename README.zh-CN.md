@@ -148,10 +148,15 @@ runner:
     session_dir: ""
   docker:
     idle_timeout: 5m
-    session_dir: ""
     image: "pi-agent:latest"   # Docker 镜像名
     network: "bridge"          # Docker 网络模式
+    agent_dir: "~/.pi/agent"
+    skills_dir: "~/.agents/skills"
     agent_mount_mode: "rw"     # agent 挂载模式
+    extra_mounts:
+      - "~/.config"            # 同路径只读挂载
+      - host: "~/scratch"
+        mode: "rw"             # 可选：ro | rw
 
 open_tool: "iterm2"            # macOS: iterm2 / terminal; Linux: xdg-open
 global_model: ""               # 全局默认模型（为空则使用 pi 默认值）

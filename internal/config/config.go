@@ -16,10 +16,6 @@ import (
 
 var ErrConfigMissing = errors.New("config missing")
 
-var defaultPlugins = []string{"@hahahhh/pi-trace@next"}
-
-const defaultPluginUpdateIntervalMinutes = 1440
-
 type Config struct {
 	Telegram struct {
 		BotToken     string  `yaml:"bot_token"`
@@ -46,10 +42,59 @@ type RunnerConfig struct {
 }
 
 type DockerConfig struct {
-	RunnerConfig   `yaml:",inline"`
-	Image          string `yaml:"image"`
-	Network        string `yaml:"network"`
-	AgentMountMode string `yaml:"agent_mount_mode"`
+	IdleTimeout    Duration     `yaml:"idle_timeout"`
+	Image          string       `yaml:"image"`
+	Network        string       `yaml:"network"`
+	AgentDir       string       `yaml:"agent_dir"`
+	SkillsDir      string       `yaml:"skills_dir"`
+	AgentMountMode string       `yaml:"agent_mount_mode"`
+	ExtraMounts    DockerMounts `yaml:"extra_mounts"`
+}
+
+// DockerMount describes one host directory bind-mounted into the container at
+// the same absolute path.
+type DockerMount struct {
+	Host string `yaml:"host"`
+	Mode string `yaml:"mode"`
+}
+
+type DockerMounts []DockerMount
+
+func (m *DockerMounts) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.SequenceNode {
+		return fmt.Errorf("docker.extra_mounts must be a sequence")
+	}
+	mounts := make([]DockerMount, 0, len(value.Content))
+	for i, item := range value.Content {
+		var mount DockerMount
+		switch item.Kind {
+		case yaml.ScalarNode:
+			if err := item.Decode(&mount.Host); err != nil {
+				return err
+			}
+			mount.Mode = "ro"
+		case yaml.MappingNode:
+			if err := item.Decode(&mount); err != nil {
+				return err
+			}
+			if strings.TrimSpace(mount.Mode) == "" {
+				mount.Mode = "ro"
+			}
+		default:
+			return fmt.Errorf("docker.extra_mounts[%d] must be a string or mapping", i)
+		}
+		mount.Host = strings.TrimSpace(mount.Host)
+		mount.Mode = strings.TrimSpace(mount.Mode)
+		if mount.Host == "" {
+			return fmt.Errorf("docker.extra_mounts[%d].host is required", i)
+		}
+		if mount.Mode != "ro" && mount.Mode != "rw" {
+			return fmt.Errorf("docker.extra_mounts[%d].mode must be ro or rw", i)
+		}
+		mounts = append(mounts, mount)
+	}
+	*m = mounts
+	return nil
 }
 
 type Paths struct {
@@ -94,36 +139,12 @@ func Load() (Config, Paths, error) {
 	if err != nil {
 		return Config{}, paths, err
 	}
-	cfg := Config{}
-	cfg.Runner.Local.IdleTimeout.Duration = 5 * time.Minute
-	cfg.Runner.Local.SessionDir = "~/.pi/agent/sessions"
-	cfg.Runner.Worktree.IdleTimeout.Duration = 5 * time.Minute
-	cfg.Runner.Docker.IdleTimeout.Duration = 5 * time.Minute
-	cfg.Runner.Docker.Image = "pi-agent:latest"
-	cfg.Runner.Docker.Network = "bridge"
-	cfg.Runner.Docker.AgentMountMode = "rw"
-	cfg.Plugins = append([]string(nil), defaultPlugins...)
-	cfg.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
-	cfg.OpenTool = "iterm2"
-	cfg.Diff.Delivery = "send"
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg, err := decodeConfig(data)
+	if err != nil {
 		return Config{}, paths, err
 	}
-	cfg.Runner.Local.SessionDir = ExpandPath(cfg.Runner.Local.SessionDir)
-	cfg.Runner.Worktree.SessionDir = ExpandPath(cfg.Runner.Worktree.SessionDir)
-	cfg.Runner.Docker.SessionDir = ExpandPath(cfg.Runner.Docker.SessionDir)
-	cfg.Plugins = expandPaths(cfg.Plugins)
-	if cfg.Runner.Docker.Image == "" {
-		cfg.Runner.Docker.Image = "pi-agent:latest"
-	}
-	if cfg.OpenTool == "" {
-		cfg.OpenTool = "iterm2"
-	}
-	if cfg.Diff.Delivery == "" {
-		cfg.Diff.Delivery = "send"
-	}
-	if cfg.Telegram.BotToken == "" || cfg.Telegram.GroupChatID == 0 || len(cfg.Telegram.AllowedUsers) == 0 {
-		return Config{}, paths, fmt.Errorf("telegram.bot_token, telegram.group_chat_id, and telegram.allowed_users are required in %s", paths.ConfigPath)
+	if err := validateConfig(cfg, paths.ConfigPath); err != nil {
+		return Config{}, paths, err
 	}
 	return cfg, paths, nil
 }
@@ -202,34 +223,14 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 						onChange(Config{}, err)
 						continue
 					}
-					var cfg Config
-					cfg.Runner.Local.IdleTimeout.Duration = 5 * time.Minute
-					cfg.Runner.Local.SessionDir = "~/.pi/agent/sessions"
-					cfg.Runner.Worktree.IdleTimeout.Duration = 5 * time.Minute
-					cfg.Runner.Docker.IdleTimeout.Duration = 5 * time.Minute
-					cfg.Runner.Docker.Image = "pi-agent:latest"
-					cfg.Runner.Docker.Network = "bridge"
-					cfg.Runner.Docker.AgentMountMode = "rw"
-					cfg.Plugins = append([]string(nil), defaultPlugins...)
-					cfg.PluginUpdateIntervalMinutes = defaultPluginUpdateIntervalMinutes
-					cfg.OpenTool = "iterm2"
-					cfg.Diff.Delivery = "send"
-					if err := yaml.Unmarshal(data, &cfg); err != nil {
+					cfg, err := decodeConfig(data)
+					if err != nil {
 						onChange(Config{}, err)
 						continue
 					}
-					cfg.Runner.Local.SessionDir = ExpandPath(cfg.Runner.Local.SessionDir)
-					cfg.Runner.Worktree.SessionDir = ExpandPath(cfg.Runner.Worktree.SessionDir)
-					cfg.Runner.Docker.SessionDir = ExpandPath(cfg.Runner.Docker.SessionDir)
-					cfg.Plugins = expandPaths(cfg.Plugins)
-					if cfg.Runner.Docker.Image == "" {
-						cfg.Runner.Docker.Image = "pi-agent:latest"
-					}
-					if cfg.OpenTool == "" {
-						cfg.OpenTool = "iterm2"
-					}
-					if cfg.Diff.Delivery == "" {
-						cfg.Diff.Delivery = "send"
+					if err := validateConfig(cfg, configPath); err != nil {
+						onChange(Config{}, err)
+						continue
 					}
 					onChange(cfg, nil)
 				}
@@ -241,6 +242,36 @@ func Watch(ctx context.Context, configPath string, onChange func(Config, error))
 			}
 		}
 	}()
+	return nil
+}
+
+func decodeConfig(data []byte) (Config, error) {
+	var cfg Config
+	if err := yaml.Unmarshal(defaultConfig, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse embedded default config: %w", err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return Config{}, err
+		}
+	}
+	normalizeConfig(&cfg)
+	return cfg, nil
+}
+
+func normalizeConfig(cfg *Config) {
+	cfg.Runner.Local.SessionDir = ExpandPath(cfg.Runner.Local.SessionDir)
+	cfg.Runner.Worktree.SessionDir = ExpandPath(cfg.Runner.Worktree.SessionDir)
+	cfg.Runner.Docker.AgentDir = ExpandPath(cfg.Runner.Docker.AgentDir)
+	cfg.Runner.Docker.SkillsDir = ExpandPath(cfg.Runner.Docker.SkillsDir)
+	cfg.Runner.Docker.ExtraMounts = expandDockerMounts(cfg.Runner.Docker.ExtraMounts)
+	cfg.Plugins = expandPaths(cfg.Plugins)
+}
+
+func validateConfig(cfg Config, path string) error {
+	if cfg.Telegram.BotToken == "" || cfg.Telegram.GroupChatID == 0 || len(cfg.Telegram.AllowedUsers) == 0 {
+		return fmt.Errorf("telegram.bot_token, telegram.group_chat_id, and telegram.allowed_users are required in %s", path)
+	}
 	return nil
 }
 
@@ -284,6 +315,24 @@ func expandPaths(paths []string) []string {
 			continue
 		}
 		expanded = append(expanded, ExpandPath(path))
+	}
+	return expanded
+}
+
+func expandDockerMounts(mounts DockerMounts) DockerMounts {
+	if len(mounts) == 0 {
+		return nil
+	}
+	expanded := make(DockerMounts, 0, len(mounts))
+	for _, mount := range mounts {
+		host := strings.TrimSpace(mount.Host)
+		if host == "" {
+			continue
+		}
+		expanded = append(expanded, DockerMount{
+			Host: ExpandPath(host),
+			Mode: strings.TrimSpace(mount.Mode),
+		})
 	}
 	return expanded
 }

@@ -149,10 +149,15 @@ runner:
     session_dir: ""
   docker:
     idle_timeout: 5m
-    session_dir: ""
     image: "pi-agent:latest"
     network: "bridge"
+    agent_dir: "~/.pi/agent"
+    skills_dir: "~/.agents/skills"
     agent_mount_mode: "rw"
+    extra_mounts:
+      - "~/.config"            # same-path read-only mount
+      - host: "~/scratch"
+        mode: "rw"             # optional: ro | rw
 
 open_tool: "iterm2"            # macOS: iterm2 / terminal; Linux: xdg-open
 global_model: ""               # Global default model (empty = pi default)
