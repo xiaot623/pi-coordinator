@@ -46,6 +46,42 @@ func TestDockerContainerArgsAllowSessionWithoutWorkspaceMount(t *testing.T) {
 	}
 }
 
+func TestDockerContainerArgsIncludeRequestEnv(t *testing.T) {
+	tmp := t.TempDir()
+	agentDir := filepath.Join(tmp, "agent")
+	pluginDir := filepath.Join(tmp, "plugins")
+	sessionDir := filepath.Join(tmp, "sessions")
+	for _, dir := range []string{agentDir, pluginDir, sessionDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("prepare dir %s: %v", dir, err)
+		}
+	}
+
+	d := NewDocker(DockerOptions{
+		Binary:         "pi",
+		Image:          "pi-agent:test",
+		HostAgentDir:   agentDir,
+		HostPluginDir:  pluginDir,
+		HostSessionDir: sessionDir,
+	})
+
+	args, err := d.containerArgs(context.Background(), StartRequest{SessionID: "sess-1", Env: map[string]string{
+		"TELEGRAM_BOT_TOKEN": "secret",
+		"TELEGRAM_CHAT_ID":   "123",
+	}})
+	if err != nil {
+		t.Fatalf("containerArgs returned error: %v", err)
+	}
+
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-e TELEGRAM_BOT_TOKEN=secret") || !strings.Contains(joined, "-e TELEGRAM_CHAT_ID=123") {
+		t.Fatalf("expected telegram env in args: %q", joined)
+	}
+	if strings.Contains(strings.Join(sanitizeDockerArgs(args), " "), "TELEGRAM_BOT_TOKEN=secret") {
+		t.Fatalf("expected docker arg sanitization to redact TELEGRAM_BOT_TOKEN")
+	}
+}
+
 func TestDockerContainerArgsIncludeExtraMounts(t *testing.T) {
 	tmp := t.TempDir()
 	agentDir := filepath.Join(tmp, "agent")

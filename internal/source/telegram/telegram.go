@@ -266,6 +266,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{"command": "unpin", "description": "Clear the pinned workspace"},
 			{"command": "model", "description": "Configure model settings"},
 			{"command": "bots", "description": "Show managed role bots"},
+			{"command": "newbot", "description": "Create or show a managed role bot token"},
 			{"command": "diff", "description": "Generate HTML diff view of current changes"},
 		},
 	}, &resp, 20*time.Second)
@@ -535,6 +536,7 @@ type User struct {
 type Chat struct {
 	ID            int64    `json:"id"`
 	Type          string   `json:"type"`
+	Title         string   `json:"title"`
 	PinnedMessage *Message `json:"pinned_message"`
 }
 

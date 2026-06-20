@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,17 @@ func TestLocalProcessSendWithModelSwitchesBeforePrompt(t *testing.T) {
 	}
 	if proc.currentModel != "provider-b/model-b" {
 		t.Fatalf("expected currentModel to update, got %q", proc.currentModel)
+	}
+}
+
+func TestEnvWithOverridesAndSortsExtraKeys(t *testing.T) {
+	env := envWith([]string{"B=old", "A=keep", "TELEGRAM_BOT_TOKEN=old-token"}, map[string]string{
+		"TELEGRAM_CHAT_ID":   "123",
+		"TELEGRAM_BOT_TOKEN": "new-token",
+	})
+	joined := strings.Join(env, "\n")
+	if joined != "B=old\nA=keep\nTELEGRAM_BOT_TOKEN=new-token\nTELEGRAM_CHAT_ID=123" {
+		t.Fatalf("unexpected env merge:\n%s", joined)
 	}
 }
 

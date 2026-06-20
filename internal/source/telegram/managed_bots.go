@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const genericRole = "Generic"
+const (
+	genericRole = "Generic"
+	deliverRole = "Deliver"
+)
 
 type managedBotRecord struct {
 	Role               string `json:"role"`
@@ -41,6 +44,10 @@ type managedBotCredentials struct {
 	ChatIDs []int64
 }
 
+func managedBotRoles() []string {
+	return []string{genericRole, deliverRole}
+}
+
 func (b *Bot) ensureTraceBot(ctx context.Context, role string, chatIDForNotice int64) (*managedBotCredentials, error) {
 	record, err := b.ensureManagedBotRecord(ctx, role)
 	if err != nil {
@@ -60,11 +67,44 @@ func (b *Bot) ensureTraceBot(ctx context.Context, role string, chatIDForNotice i
 		b.sendManagedBotAddToGroup(chatIDForNotice, record)
 		return nil, err
 	}
+	return b.credentialsForManagedBot(record), nil
+}
+
+func (b *Bot) managedBotCredentialsIfReady(ctx context.Context, role string) (*managedBotCredentials, bool) {
+	role = normalizeRole(role)
+	file, err := readManagedBotFile(b.managedBotsPath())
+	if err != nil {
+		b.app.Logger().Warn("read managed bot file failed", "role", role, "error", err)
+		return nil, false
+	}
+	idx := findManagedBotByRole(file.Bots, role)
+	if idx < 0 {
+		return nil, false
+	}
+	record := file.Bots[idx]
+	if record.Token == "" {
+		refreshed, err := b.refreshManagedBotTokenByUsername(ctx, record)
+		if err != nil || refreshed.Token == "" {
+			if err != nil {
+				b.app.Logger().Debug("refresh managed bot token failed", "role", role, "error", err)
+			}
+			return nil, false
+		}
+		record = refreshed
+	}
+	if err := b.ensureManagedBotInGroup(ctx, record); err != nil {
+		b.app.Logger().Debug("managed bot is not ready in group", "role", role, "error", err)
+		return nil, false
+	}
+	return b.credentialsForManagedBot(record), true
+}
+
+func (b *Bot) credentialsForManagedBot(record managedBotRecord) *managedBotCredentials {
 	return &managedBotCredentials{
 		Role:    record.Role,
 		Token:   record.Token,
 		ChatIDs: []int64{b.app.Config().Telegram.GroupChatID},
-	}, nil
+	}
 }
 
 func (b *Bot) ensureManagedBotRecord(ctx context.Context, role string) (managedBotRecord, error) {
@@ -308,6 +348,48 @@ func (b *Bot) listManagedBots(chatID int64) {
 		lines = append(lines, label)
 	}
 	b.send(chatID, strings.Join(lines, "\n"), nil)
+}
+
+func (b *Bot) sendNewBotRoleKeyboard(chatID int64) {
+	var rows [][]inlineKeyboardButton
+	for _, role := range managedBotRoles() {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: role, CallbackData: "newbot:" + role}))
+	}
+	b.send(chatID, "Choose a managed bot role:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (b *Bot) handleNewBotRole(ctx context.Context, chatID int64, role string) {
+	role = normalizeRole(role)
+	if !isKnownManagedBotRole(role) {
+		b.send(chatID, "Unknown managed bot role: "+role, nil)
+		return
+	}
+	record, err := b.ensureManagedBotRecord(ctx, role)
+	if err != nil {
+		b.send(chatID, "Failed to read managed bot config: "+err.Error(), nil)
+		return
+	}
+	if record.Token == "" {
+		refreshed, err := b.refreshManagedBotTokenByUsername(ctx, record)
+		if err == nil && refreshed.Token != "" {
+			record = refreshed
+		}
+	}
+	if record.Token != "" {
+		b.send(chatID, fmt.Sprintf("Existing %s bot token:\n%s", record.Role, record.Token), nil)
+		return
+	}
+	b.sendManagedBotSetup(ctx, chatID, record)
+}
+
+func isKnownManagedBotRole(role string) bool {
+	role = normalizeRole(role)
+	for _, candidate := range managedBotRoles() {
+		if normalizeRole(candidate) == role {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Bot) managedBotRecordByUser(userID int64) managedBotRecord {

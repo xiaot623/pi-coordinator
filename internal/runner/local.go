@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,12 +217,14 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 	}
 	cmd := exec.CommandContext(ctx, l.opts.Binary, args...)
 	cmd.Dir = req.Workspace
+	env := envWith(cmd.Environ(), req.Env)
 	if req.TraceTelegramToken != "" && len(req.TraceTelegramChatIDs) > 0 {
-		cmd.Env = append(cmd.Environ(),
-			"PI_TRACE_TELEGRAM_BOT_TOKEN="+req.TraceTelegramToken,
-			"PI_TRACE_TELEGRAM_CHAT_IDS="+int64ListString(req.TraceTelegramChatIDs),
-		)
+		env = envWith(env, map[string]string{
+			"PI_TRACE_TELEGRAM_BOT_TOKEN": req.TraceTelegramToken,
+			"PI_TRACE_TELEGRAM_CHAT_IDS":  int64ListString(req.TraceTelegramChatIDs),
+		})
 	}
+	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, false, err
@@ -241,6 +244,34 @@ func (l *Local) ensure(ctx context.Context, req StartRequest) (*LocalProcess, bo
 	l.mu.Unlock()
 	go l.watch(proc, stdout)
 	return proc, true, nil
+}
+
+func envWith(base []string, extra map[string]string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	blocked := make(map[string]bool, len(extra))
+	for key := range extra {
+		if strings.TrimSpace(key) != "" {
+			blocked[key] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(blocked))
+	for _, entry := range base {
+		key, _, _ := strings.Cut(entry, "=")
+		if !blocked[key] {
+			out = append(out, entry)
+		}
+	}
+	keys := make([]string, 0, len(blocked))
+	for key := range blocked {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		out = append(out, key+"="+extra[key])
+	}
+	return out
 }
 
 func int64ListString(values []int64) string {

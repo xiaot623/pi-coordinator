@@ -38,6 +38,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("unpin", handleUnpin)
 	b.router.Command("model", handleModelCmd)
 	b.router.Command("bots", handleBotsCmd)
+	b.router.Command("newbot", handleNewBotCmd)
 	b.router.Command("diff", handleDiffCmd)
 
 	// Generic text messages
@@ -97,6 +98,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("new:", handleNewCallback)
 	b.router.Callback("pin:", handlePinCallback)
 	b.router.Callback("trace:retry", handleTraceRetry)
+	b.router.Callback("newbot:", handleNewBotCallback)
 }
 
 // -- Command Handlers --
@@ -484,6 +486,15 @@ func handleBotsCmd(ctx context.Context, b *Bot, update Update) {
 	b.listManagedBots(update.Message.Chat.ID)
 }
 
+func handleNewBotCmd(ctx context.Context, b *Bot, update Update) {
+	role := strings.TrimSpace(update.Message.CommandArguments())
+	if role == "" {
+		b.sendNewBotRoleKeyboard(update.Message.Chat.ID)
+		return
+	}
+	b.handleNewBotRole(ctx, update.Message.Chat.ID, role)
+}
+
 // -- Message Handlers --
 
 func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
@@ -653,6 +664,7 @@ func handleTopicMessage(ctx context.Context, b *Bot, update Update) {
 	} else {
 		req.TraceTelegramToken = traceBot.Token
 		req.TraceTelegramChatIDs = traceBot.ChatIDs
+		applyAgentTelegramEnv(ctx, b, &req, sess, traceBot.Token)
 	}
 
 	runnerPrompt := appendImageContext(text, images)
@@ -711,6 +723,12 @@ func handleChooseModelScope(ctx context.Context, b *Bot, update Update) {
 	}
 	b.setPending(q.From.ID, modelPendingForScope(ctx, b, q.From.ID, q.Message, scope))
 	editModelProviders(ctx, b, q.Message.Chat.ID, q.Message.MessageID, scope)
+}
+
+func handleNewBotCallback(ctx context.Context, b *Bot, update Update) {
+	q := update.CallbackQuery
+	role := strings.TrimPrefix(q.Data, "newbot:")
+	b.handleNewBotRole(ctx, q.Message.Chat.ID, role)
 }
 
 func handleTraceRetry(ctx context.Context, b *Bot, update Update) {
@@ -1376,6 +1394,35 @@ func findWorkspaceForPin(ctx context.Context, b *Bot, query string) (store.Works
 
 // -- Action Implementations --
 
+func agentTelegramEnv(ctx context.Context, b *Bot, sess store.Session, fallbackBotToken string) map[string]string {
+	botToken := fallbackBotToken
+	if deliver, ok := b.managedBotCredentialsIfReady(ctx, deliverRole); ok && deliver.Token != "" {
+		botToken = deliver.Token
+	}
+	chatID := b.app.Config().Telegram.GroupChatID
+	chatTitle := ""
+	if chat, err := b.getChat(ctx, chatID); err == nil && chat != nil {
+		chatTitle = chat.Title
+	} else if err != nil {
+		b.app.Logger().Debug("telegram group title lookup failed", "chat_id", chatID, "error", err)
+	}
+	forumName := strings.TrimSpace(sess.Title)
+	if forumName == "" {
+		forumName = displaySession(sess)
+	}
+	return map[string]string{
+		"TELEGRAM_BOT_TOKEN":        botToken,
+		"TELEGRAM_CHAT_ID":          strconv.FormatInt(chatID, 10),
+		"TELEGRAM_THREAD_ID":        strconv.Itoa(sess.TopicID),
+		"TELEGRAM_FORUM_NAME":       forumName,
+		"TELEGRAM_FORUM_CHAT_TITLE": chatTitle,
+	}
+}
+
+func applyAgentTelegramEnv(ctx context.Context, b *Bot, req *runner.StartRequest, sess store.Session, fallbackBotToken string) {
+	req.Env = agentTelegramEnv(ctx, b, sess, fallbackBotToken)
+}
+
 func appendImageContext(prompt string, images []runner.ImageAttachment) string {
 	if len(images) == 0 {
 		return prompt
@@ -1589,6 +1636,7 @@ func handleRunMode(ctx context.Context, b *Bot, update Update, runnerType string
 	}
 	req.TraceTelegramToken = traceBot.Token
 	req.TraceTelegramChatIDs = traceBot.ChatIDs
+	applyAgentTelegramEnv(ctx, b, &req, sess, traceBot.Token)
 
 	images := decodeImagesJSON(p.ImagesJSON)
 	runnerPrompt := appendImageContext(p.Prompt, images)
@@ -1642,6 +1690,7 @@ func resumeSession(ctx context.Context, b *Bot, chat Chat, userID int64, session
 	}
 	req.TraceTelegramToken = traceBot.Token
 	req.TraceTelegramChatIDs = traceBot.ChatIDs
+	applyAgentTelegramEnv(ctx, b, &req, sess, traceBot.Token)
 
 	runnerPrompt := appendImageContext(prompt, images)
 	if _, err := b.app.PromptSession(ctx, sess, ws, sess.RunnerType, req, runnerPrompt, images); err != nil {

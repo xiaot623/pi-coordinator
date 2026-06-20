@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -248,6 +249,7 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 	if d.opts.Network != "" && d.opts.Network != "bridge" {
 		args = append(args, "--network", d.opts.Network)
 	}
+	args = append(args, dockerEnvArgs(req.Env)...)
 	if req.Workspace != "" {
 		args = append(args, "-v", req.Workspace+":"+req.Workspace+":rw")
 	}
@@ -529,6 +531,24 @@ func pathsOverlap(a, b string) bool {
 	return strings.HasPrefix(a, b+string(filepath.Separator)) || strings.HasPrefix(b, a+string(filepath.Separator))
 }
 
+func dockerEnvArgs(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		if strings.TrimSpace(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	args := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		args = append(args, "-e", key+"="+env[key])
+	}
+	return args
+}
+
 func requireDir(path string) error {
 	st, err := os.Stat(path)
 	if err != nil {
@@ -655,6 +675,9 @@ func sanitizeDockerArgs(args []string) []string {
 	for i, arg := range out {
 		if strings.HasPrefix(arg, "PI_TRACE_TELEGRAM_BOT_TOKEN=") {
 			out[i] = "PI_TRACE_TELEGRAM_BOT_TOKEN=<redacted>"
+		}
+		if strings.HasPrefix(arg, "TELEGRAM_BOT_TOKEN=") {
+			out[i] = "TELEGRAM_BOT_TOKEN=<redacted>"
 		}
 	}
 	return out

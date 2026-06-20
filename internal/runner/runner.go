@@ -44,6 +44,7 @@ type StartRequest struct {
 	Model                string
 	Existing             bool
 	Role                 string
+	Env                  map[string]string
 	TraceTelegramToken   string
 	TraceTelegramChatIDs []int64
 }
