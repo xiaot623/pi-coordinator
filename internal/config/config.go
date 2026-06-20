@@ -47,7 +47,7 @@ type DockerConfig struct {
 	Network        string       `yaml:"network"`
 	AgentDir       string       `yaml:"agent_dir"`
 	SkillsDir      string       `yaml:"skills_dir"`
-	AgentMountMode string       `yaml:"agent_mount_mode"`
+	MountMode      string       `yaml:"mount_mode"`
 	ExtraMounts    DockerMounts `yaml:"extra_mounts"`
 }
 

@@ -22,7 +22,7 @@ runner:
     network: "bridge"
     agent_dir: "~/.pi/agent"
     skills_dir: "~/.agents/skills"
-    agent_mount_mode: "rw"
+    mount_mode: "rw"
     extra_mounts:
       - "~/.config"           # maps host ~/.config -> container ~/.config (ro)
       # - host: "~/scratch"   # maps host ~/scratch -> container ~/scratch

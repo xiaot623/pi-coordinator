@@ -27,7 +27,7 @@ func TestDecodeConfigAppliesEmbeddedDefaults(t *testing.T) {
 	if cfg.Runner.Local.SessionDir == "" {
 		t.Fatalf("expected default local session dir")
 	}
-	if cfg.Runner.Docker.Image != "pi-agent:latest" || cfg.Runner.Docker.Network != "bridge" || cfg.Runner.Docker.AgentMountMode != "rw" {
+	if cfg.Runner.Docker.Image != "pi-agent:latest" || cfg.Runner.Docker.Network != "bridge" || cfg.Runner.Docker.MountMode != "rw" {
 		t.Fatalf("unexpected default docker config: %#v", cfg.Runner.Docker)
 	}
 	if cfg.Runner.Docker.AgentDir == "" || cfg.Runner.Docker.SkillsDir == "" {

@@ -23,7 +23,7 @@ type DockerOptions struct {
 	Image                string
 	Network              string
 	ContainerHome        string
-	AgentMountMode       string
+	MountMode            string
 	ExtraMounts          []DockerMount
 	HostAgentDir         string
 	HostPluginDir        string
@@ -66,8 +66,8 @@ func NewDocker(opts DockerOptions) *Docker {
 	if opts.ContainerHome == "" {
 		opts.ContainerHome = "/home/pi"
 	}
-	if opts.AgentMountMode != "ro" {
-		opts.AgentMountMode = "rw"
+	if opts.MountMode != "ro" {
+		opts.MountMode = "rw"
 	}
 	if opts.IdleTimeout == 0 {
 		opts.IdleTimeout = 5 * time.Minute
@@ -270,12 +270,12 @@ func (d *Docker) containerArgs(ctx context.Context, req StartRequest) ([]string,
 		args = append(args, "-v", mount.HostPath+":"+containerPath+":"+mount.Mode)
 	}
 	args = append(args,
-		"-v", d.opts.HostAgentDir+":"+filepath.Join(d.opts.ContainerHome, ".pi", "agent")+":"+d.opts.AgentMountMode,
+		"-v", d.opts.HostAgentDir+":"+filepath.Join(d.opts.ContainerHome, ".pi", "agent")+":"+d.opts.MountMode,
 		"-v", d.opts.HostPluginDir+":"+filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "agent")+":ro",
 		"-v", d.opts.HostSessionDir+":"+filepath.Join(d.opts.ContainerHome, ".mypi", "pico", "sessions", "docker")+":rw",
 	)
 	if d.opts.HostSkillsDir != "" {
-		args = append(args, "-v", d.opts.HostSkillsDir+":"+filepath.Join(d.opts.ContainerHome, ".agents", "skills")+":ro")
+		args = append(args, "-v", d.opts.HostSkillsDir+":"+filepath.Join(d.opts.ContainerHome, ".agents", "skills")+":"+d.opts.MountMode)
 	}
 	workdir := req.Workspace
 	if workdir == "" {
@@ -300,7 +300,7 @@ func (d *Docker) queryAvailableModels(ctx context.Context) ([]ModelInfo, error) 
 		"run", "--rm",
 		"-e", "HOME=" + d.opts.ContainerHome,
 		"-e", "NPM_CONFIG_CACHE=/tmp/npm-cache",
-		"-v", d.opts.HostAgentDir + ":" + filepath.Join(d.opts.ContainerHome, ".pi", "agent") + ":" + d.opts.AgentMountMode,
+		"-v", d.opts.HostAgentDir + ":" + filepath.Join(d.opts.ContainerHome, ".pi", "agent") + ":" + d.opts.MountMode,
 		"-i",
 		d.opts.Image,
 		d.opts.Binary, "--mode", "rpc", "--no-session",

@@ -78,7 +78,7 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		Binary:               "pi",
 		Image:                cfg.Runner.Docker.Image,
 		Network:              cfg.Runner.Docker.Network,
-		AgentMountMode:       cfg.Runner.Docker.AgentMountMode,
+		MountMode:            cfg.Runner.Docker.MountMode,
 		ExtraMounts:          dockerMounts(cfg.Runner.Docker.ExtraMounts),
 		HostAgentDir:         dockerAgentDir,
 		HostPluginDir:        dockerPluginDir,
