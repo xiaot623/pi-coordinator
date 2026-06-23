@@ -27,6 +27,7 @@ The bot spawns a pi agent process inside a Forum Topic in a configured Telegram 
 - **Per-session model selection** — Choose AI models at Global / Workspace / Session scope
 - **Git integration** — Rebase, commit, and view HTML diffs directly from Telegram
 - **Todo management** — Save and organize task ideas across workspaces
+- **Cron scheduling** — Create recurring tasks with auto execution or manual confirmation
 
 ## Commands
 
@@ -37,6 +38,7 @@ The bot spawns a pi agent process inside a Forum Topic in a configured Telegram 
 | `/add` | Add a workspace from your filesystem |
 | `/new [description]` | Start a new task in a workspace |
 | `/todo` | Manage saved todos across workspaces |
+| `/cron` | Manage scheduled tasks across workspaces |
 | `/status` | List all active sessions with details |
 | `/detail` | Show workspace path, run mode, model, and git summary |
 | `/stop` | Force-stop the current session |
@@ -199,7 +201,8 @@ pico/
 │   ├── session/              # Session scanner (sync from disk)
 │   ├── source/telegram/      # Telegram bot: handlers, keyboard UI, routing
 │   ├── store/                # SQLite persistence
-│   └── todos/                # Todo list storage
+│   ├── todos/                # Todo list storage
+│   └── crons/                # Cron task storage and schedule parsing
 ├── docker/                   # Docker image definitions
 ├── scripts/                  # Build and release scripts
 ├── docs/                     # Additional documentation

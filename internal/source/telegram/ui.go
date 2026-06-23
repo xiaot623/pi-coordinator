@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xiaot/pi-coordinator/internal/crons"
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/store"
 	"github.com/xiaot/pi-coordinator/internal/todos"
@@ -19,6 +20,7 @@ const (
 	workspacePageSize    = 10
 	sessionPageSize      = 8
 	todoPageSize         = 8
+	cronPageSize         = 8
 	addWorkspacePageSize = 8
 	pinnedOnPrefix       = "Pinned on "
 	todoTemporaryKey     = "tmp"
@@ -178,6 +180,162 @@ func sendTodoItemDetail(ctx context.Context, b *Bot, chatID int64, messageID int
 			inlineKeyboardButton{Text: "⬅️ Back", CallbackData: "todo:back:" + workspaceKey + ":" + strconv.Itoa(page)},
 		),
 	}})
+}
+
+func sendCronWorkspaces(ctx context.Context, b *Bot, chatID int64, messageID int, page int) {
+	count, err := b.app.CountSelectableWorkspaces(ctx)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read workspaces: "+err.Error(), nil)
+		return
+	}
+	total := count + 1
+	page = clampPage(page, total, workspacePageSize)
+	limit := workspacePageSize
+	offset := 0
+	includeTemporary := page == 0
+	if includeTemporary {
+		limit--
+	} else {
+		offset = page*workspacePageSize - 1
+	}
+	workspaces, err := b.app.ListSelectableWorkspaces(ctx, limit, offset)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read workspaces: "+err.Error(), nil)
+		return
+	}
+	var rows [][]inlineKeyboardButton
+	if includeTemporary {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "temporary", CallbackData: "cron:ws:" + cronWorkspaceKey(0, true)}))
+	}
+	for i := 0; i < len(workspaces); i += 2 {
+		var buttons []inlineKeyboardButton
+		for _, ws := range workspaces[i:min(i+2, len(workspaces))] {
+			buttons = append(buttons, inlineKeyboardButton{Text: workspaceLabel(ws), CallbackData: "cron:ws:" + cronWorkspaceKey(ws.ID, false)})
+		}
+		rows = append(rows, buttons)
+	}
+	rows = appendPageNav(rows, page, total, workspacePageSize, "cron:wp:")
+	b.sendOrEdit(chatID, messageID, "Choose a workspace for cron tasks:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func sendCronList(ctx context.Context, b *Bot, chatID int64, messageID int, workspaceID int64, temporary bool, page int) {
+	workspaceName, err := todoWorkspaceName(ctx, b, workspaceID, temporary)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read workspace: "+err.Error(), nil)
+		return
+	}
+	workspaceKind := ""
+	if temporary {
+		workspaceKind = crons.WorkspaceKindTemporary
+	}
+	items, err := b.app.CronStore().ListByWorkspace(workspaceID, workspaceKind)
+	if err != nil {
+		b.sendOrEdit(chatID, messageID, "Failed to read cron tasks: "+err.Error(), nil)
+		return
+	}
+	page = clampPage(page, len(items), cronPageSize)
+	start := page * cronPageSize
+	end := min(start+cronPageSize, len(items))
+	var pageItems []crons.Item
+	if start < len(items) {
+		pageItems = items[start:end]
+	}
+	workspaceKey := cronWorkspaceKey(workspaceID, temporary)
+	var rows [][]inlineKeyboardButton
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "➕ Add Cron", CallbackData: "cron:add:" + workspaceKey}))
+	for _, item := range pageItems {
+		rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: cronListLabel(item), CallbackData: "cron:item:" + item.ID + ":" + strconv.Itoa(page)}))
+	}
+	rows = appendPageNav(rows, page, len(items), cronPageSize, "cron:list:"+workspaceKey+":")
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "⬅️ Workspaces", CallbackData: "cron:wp:0"}))
+	text := "Crons · " + workspaceName
+	if len(items) == 0 {
+		text += "\n\nNo cron tasks yet."
+	}
+	b.sendOrEdit(chatID, messageID, text, inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func sendCronModePicker(b *Bot, chatID int64, messageID int, workspaceID int64, temporary bool) {
+	key := cronWorkspaceKey(workspaceID, temporary)
+	b.sendOrEdit(chatID, messageID, "Choose cron execution mode:", inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
+		inlineKeyboardRow(
+			inlineKeyboardButton{Text: "🤖 Auto execute", CallbackData: "cron:mode:" + key + ":auto"},
+			inlineKeyboardButton{Text: "👤 Manual confirm", CallbackData: "cron:mode:" + key + ":manual"},
+		),
+		inlineKeyboardRow(inlineKeyboardButton{Text: "⬅️ Back", CallbackData: "cron:back:" + key + ":0"}),
+	}})
+}
+
+func sendCronRunnerPicker(ctx context.Context, b *Bot, chatID int64, messageID int, workspaceID int64, temporary bool, mode string) {
+	key := cronWorkspaceKey(workspaceID, temporary)
+	rows := cronRunnerRows(ctx, b, workspaceID, temporary, "cron:runner:"+key+":"+mode+":")
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "⬅️ Mode", CallbackData: "cron:add:" + key}))
+	b.sendOrEdit(chatID, messageID, "Choose default run mode for this cron:", inlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func sendCronItemDetail(ctx context.Context, b *Bot, chatID int64, messageID int, item crons.Item, page int) {
+	workspaceName, err := todoWorkspaceName(ctx, b, item.WorkspaceID, item.IsTemporary())
+	if err != nil {
+		workspaceName = "workspace unavailable"
+	}
+	next := "-"
+	if item.Enabled {
+		if t, err := crons.Next(item.Schedule, time.Now()); err == nil && !t.IsZero() {
+			next = t.Local().Format("2006-01-02 15:04")
+		}
+	}
+	status := "disabled"
+	if item.Enabled {
+		status = "enabled"
+	}
+	text := "Cron: " + cronTitleLabel(item.Title) +
+		"\nWorkspace: " + workspaceName +
+		"\nSchedule: " + item.Schedule +
+		"\nNext run: " + next +
+		"\nMode: " + item.Mode +
+		"\nRunner: " + item.Runner +
+		"\nStatus: " + status +
+		"\nUpdated: " + item.UpdatedAt.Local().Format("2006-01-02 15:04") +
+		"\n\n" + strings.TrimSpace(item.Prompt)
+	toggleText := "⏸ Disable"
+	if !item.Enabled {
+		toggleText = "▶️ Enable"
+	}
+	workspaceKey := cronWorkspaceKey(item.WorkspaceID, item.IsTemporary())
+	b.sendOrEdit(chatID, messageID, text, inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
+		inlineKeyboardRow(
+			inlineKeyboardButton{Text: "▶️ Run Now", CallbackData: "cron:run:" + item.ID + ":" + item.Runner},
+			inlineKeyboardButton{Text: toggleText, CallbackData: "cron:toggle:" + item.ID + ":" + strconv.Itoa(page)},
+		),
+		inlineKeyboardRow(
+			inlineKeyboardButton{Text: "✏️ Edit", CallbackData: "cron:edit:" + item.ID + ":" + strconv.Itoa(page)},
+			inlineKeyboardButton{Text: "🗑 Delete", CallbackData: "cron:del:" + item.ID + ":" + strconv.Itoa(page)},
+		),
+		inlineKeyboardRow(inlineKeyboardButton{Text: "⬅️ Back", CallbackData: "cron:back:" + workspaceKey + ":" + strconv.Itoa(page)}),
+	}})
+}
+
+func cronDueKeyboard(ctx context.Context, b *Bot, item crons.Item) inlineKeyboardMarkup {
+	rows := [][]inlineKeyboardButton{
+		inlineKeyboardRow(inlineKeyboardButton{Text: "▶️ Run " + runnerLabel(item.Runner), CallbackData: "cron:run:" + item.ID + ":" + item.Runner}),
+	}
+	rows = append(rows, cronRunnerRows(ctx, b, item.WorkspaceID, item.IsTemporary(), "cron:run:"+item.ID+":")...)
+	rows = append(rows, inlineKeyboardRow(inlineKeyboardButton{Text: "⏭ Skip", CallbackData: "cron:skip:" + item.ID}))
+	return inlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func cronRunnerRows(ctx context.Context, b *Bot, workspaceID int64, temporary bool, prefix string) [][]inlineKeyboardButton {
+	if temporary {
+		return [][]inlineKeyboardButton{inlineKeyboardRow(inlineKeyboardButton{Text: "Docker", CallbackData: prefix + crons.RunnerDocker})}
+	}
+	runners := []inlineKeyboardButton{{Text: "Local", CallbackData: prefix + crons.RunnerLocal}}
+	if ws, err := b.app.GetSelectableWorkspace(ctx, workspaceID); err == nil && b.app.IsGitWorkspace(ctx, ws) {
+		runners = append(runners,
+			inlineKeyboardButton{Text: "Worktree", CallbackData: prefix + crons.RunnerWorktree},
+			inlineKeyboardButton{Text: "Docker", CallbackData: prefix + crons.RunnerDocker},
+		)
+	}
+	return [][]inlineKeyboardButton{inlineKeyboardRow(runners...)}
 }
 
 func startAddWorkspaceBrowser(ctx context.Context, b *Bot, chatID int64, messageID int, userID int64) {
@@ -380,6 +538,51 @@ func todoTitleLabel(title string) string {
 		return string(runes[:48]) + "…"
 	}
 	return title
+}
+
+func cronWorkspaceKey(workspaceID int64, temporary bool) string {
+	return todoWorkspaceKey(workspaceID, temporary)
+}
+
+func parseCronWorkspaceKey(raw string) (workspaceID int64, temporary bool, ok bool) {
+	return parseTodoWorkspaceKey(raw)
+}
+
+func cronTitleLabel(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Untitled Cron"
+	}
+	runes := []rune(title)
+	if len(runes) > 48 {
+		return string(runes[:48]) + "…"
+	}
+	return title
+}
+
+func cronListLabel(item crons.Item) string {
+	status := "🟢"
+	if !item.Enabled {
+		status = "⚪️"
+	}
+	mode := "🤖"
+	if item.Mode == crons.ModeManual {
+		mode = "👤"
+	}
+	return status + " " + cronTitleLabel(item.Title) + " · " + item.Schedule + " · " + mode + " " + item.Runner
+}
+
+func runnerLabel(runner string) string {
+	switch runner {
+	case crons.RunnerLocal:
+		return "Local"
+	case crons.RunnerWorktree:
+		return "Worktree"
+	case crons.RunnerDocker:
+		return "Docker"
+	default:
+		return runner
+	}
 }
 
 type childDirectory struct {

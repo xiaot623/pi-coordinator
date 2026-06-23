@@ -36,6 +36,7 @@
 | `/add` | 从文件系统添加工作区 |
 | `/new [描述]` | 在工作区中创建新任务 |
 | `/todo` | 管理跨工作区的待办事项 |
+| `/cron` | 管理跨工作区的定时任务 |
 | `/status` | 列出所有活跃会话及详情 |
 | `/detail` | 显示工作区路径、运行模式、模型及 Git 摘要 |
 | `/stop` | 强制停止当前会话 |
@@ -198,7 +199,8 @@ pico/
 │   ├── session/              # 会话扫描器（从磁盘同步）
 │   ├── source/telegram/      # Telegram Bot：消息处理、键盘 UI、路由
 │   ├── store/                # SQLite 持久化
-│   └── todos/                # 待办事项存储
+│   ├── todos/                # 待办事项存储
+│   └── crons/                # 定时任务存储和调度解析
 ├── docker/                   # Docker 镜像定义
 ├── scripts/                  # 构建和发布脚本
 ├── docs/                     # 补充文档

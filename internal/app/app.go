@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/xiaot/pi-coordinator/internal/config"
+	"github.com/xiaot/pi-coordinator/internal/crons"
 	"github.com/xiaot/pi-coordinator/internal/runner"
 	"github.com/xiaot/pi-coordinator/internal/session"
 	"github.com/xiaot/pi-coordinator/internal/store"
@@ -30,6 +31,7 @@ type App struct {
 	log    *slog.Logger
 	store  *store.Store
 	todos  *todos.Store
+	crons  *crons.Store
 	local  runner.Runner
 	work   runner.Runner
 	docker runner.Runner
@@ -42,6 +44,11 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		return nil, err
 	}
 	todoStore, err := todos.Open(filepath.Join(filepath.Dir(paths.ConfigPath), "todos.json"))
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	cronStore, err := crons.Open(filepath.Join(filepath.Dir(paths.ConfigPath), "crons.json"))
 	if err != nil {
 		_ = st.Close()
 		return nil, err
@@ -95,6 +102,7 @@ func New(cfg config.Config, paths config.Paths, logger *slog.Logger) (*App, erro
 		log:    logger,
 		store:  st,
 		todos:  todoStore,
+		crons:  cronStore,
 		local:  rm,
 		work:   work,
 		docker: docker,
@@ -120,6 +128,7 @@ func (a *App) Close() {
 
 func (a *App) Store() *store.Store     { return a.store }
 func (a *App) TodoStore() *todos.Store { return a.todos }
+func (a *App) CronStore() *crons.Store { return a.crons }
 func (a *App) Runner() runner.Runner   { return a.local }
 func (a *App) Config() config.Config   { return *a.cfg }
 func (a *App) Paths() config.Paths     { return a.paths }

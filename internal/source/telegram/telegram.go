@@ -50,6 +50,10 @@ type PendingState struct {
 	BrowsePage       int
 	BrowseShowHidden bool
 	TodoID           string
+	CronID           string
+	CronMode         string
+	CronRunner       string
+	CronSchedule     string
 	MessageID        int
 	Page             int
 }
@@ -74,6 +78,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := b.registerCommands(ctx); err != nil {
 		b.app.Logger().Warn("register telegram commands failed", "error", err)
 	}
+
+	go runCronScheduler(ctx, b)
 
 	offset := 0
 	for {
@@ -255,6 +261,7 @@ func (b *Bot) registerCommands(ctx context.Context) error {
 			{"command": "add", "description": "Add a workspace"},
 			{"command": "new", "description": "Start a new task"},
 			{"command": "todo", "description": "Manage saved todos"},
+			{"command": "cron", "description": "Manage scheduled tasks"},
 			{"command": "status", "description": "List active sessions"},
 			{"command": "detail", "description": "Show current path, mode, model, and git summary"},
 			{"command": "stop", "description": "Force-stop the current session topic"},

@@ -28,6 +28,7 @@ func (b *Bot) registerHandlers() {
 	b.router.Command("add", handleAddCmd)
 	b.router.Command("new", handleNewCmd)
 	b.router.Command("todo", handleTodoCmd)
+	b.router.Command("cron", handleCronCmd)
 	b.router.Command("status", handleStatusCmd)
 	b.router.Command("stop", handleStopCmd)
 	b.router.Command("open", handleOpenCmd)
@@ -84,6 +85,19 @@ func (b *Bot) registerHandlers() {
 	b.router.Callback("todo:edit:", handleTodoEdit)
 	b.router.Callback("todo:del:", handleTodoDelete)
 	b.router.Callback("todo:back:", handleTodoBack)
+	b.router.Callback("cron:wp:", handleCronWorkspacePage)
+	b.router.Callback("cron:ws:", handleCronWorkspace)
+	b.router.Callback("cron:list:", handleCronListPage)
+	b.router.Callback("cron:add:", handleCronAdd)
+	b.router.Callback("cron:mode:", handleCronMode)
+	b.router.Callback("cron:runner:", handleCronRunner)
+	b.router.Callback("cron:item:", handleCronItem)
+	b.router.Callback("cron:run:", handleCronRun)
+	b.router.Callback("cron:toggle:", handleCronToggle)
+	b.router.Callback("cron:edit:", handleCronEdit)
+	b.router.Callback("cron:del:", handleCronDelete)
+	b.router.Callback("cron:skip:", handleCronSkip)
+	b.router.Callback("cron:back:", handleCronBack)
 
 	b.router.Callback("ns:", handleNewSessionCallback)
 	b.router.Callback("runmodel:", handleRunModel)
@@ -104,7 +118,7 @@ func (b *Bot) registerHandlers() {
 // -- Command Handlers --
 
 func handleHelp(ctx context.Context, b *Bot, update Update) {
-	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, /new to start a task, /status or /detail to inspect context, and /stop /open /rebase /commit inside a session topic.", nil)
+	b.send(update.Message.Chat.ID, "pico is ready. Use /sync to import history, /new to start a task, /todo or /cron to manage saved work, /status or /detail to inspect context, and /stop /open /rebase /commit inside a session topic.", nil)
 }
 
 func handleSync(ctx context.Context, b *Bot, update Update) {
@@ -147,6 +161,11 @@ func handleNewCmd(ctx context.Context, b *Bot, update Update) {
 func handleTodoCmd(ctx context.Context, b *Bot, update Update) {
 	b.clearPending(update.Message.From.ID)
 	sendTodoWorkspaces(ctx, b, update.Message.Chat.ID, 0, 0)
+}
+
+func handleCronCmd(ctx context.Context, b *Bot, update Update) {
+	b.clearPending(update.Message.From.ID)
+	sendCronWorkspaces(ctx, b, update.Message.Chat.ID, 0, 0)
 }
 
 func handleOpenCmd(ctx context.Context, b *Bot, update Update) {
@@ -524,6 +543,18 @@ func handlePrivateMessage(ctx context.Context, b *Bot, update Update) {
 		case "await_todo_edit":
 			b.clearPending(userID)
 			updateTodoFromPending(ctx, b, msg.Chat.ID, p, text)
+			return
+		case "await_cron_schedule":
+			b.clearPending(userID)
+			continueCronCreateWithSchedule(ctx, b, msg.Chat.ID, msg.Chat, userID, p, text)
+			return
+		case "await_cron_prompt":
+			b.clearPending(userID)
+			createCronFromPending(ctx, b, msg.Chat.ID, p, text)
+			return
+		case "await_cron_edit":
+			b.clearPending(userID)
+			updateCronFromPending(ctx, b, msg.Chat.ID, p, text)
 			return
 		}
 	}
